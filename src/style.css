@@ -426,3 +426,7 @@ footer.credit .tb em{font-style:normal;color:var(--tb-accent)}
 .demo-bar b{font-weight:700}
 .demo-role{display:inline-flex;align-items:center;gap:4px;font-size:.85rem}
 @media print{.demo-bar{display:none}}
+
+/* "show more" under a list */
+p.more{text-align:center;margin:10px 0 0}
+.dashbars p.more{text-align:start;margin:6px 0 0;font-size:.85rem}

@@ -87,7 +87,7 @@ let W=null; // set by main.js once signed in
 const TF={month:String(CUR),src:"all",type:"all",cat:"all",q:"",from:"",to:""};
 const BF={q:"",group:"all"};
 let debtUrg="all",openDebts=new Set(),editDebt=null,noteEdit=null,focusAfter=null,editTx=null,txShown=100;
-const selTx=new Set(),selDonors=new Set();
+const selTx=new Set(),selDonors=new Set(),moreBars=new Set();let donorShown=150,unlinkedShown=60;
 const openAdd=new Set(); // "add" boxes the user opened, kept open across redraws
 // groups the user folded (budget, report, comparison) – remembered on this device only
 const closed=new Set((()=>{try{return JSON.parse(localStorage.getItem("tt-closed"))||[]}catch(e){return []}})());
@@ -190,7 +190,7 @@ function activeIn(i,m){ // same month pattern as the budget: 10 = no Av/Elul, 11
 }
 function forecast(n){
   const now=actuals(d=>monthIndex(d)===CUR),ytd=actuals(),out=[];
-  let bal=S.accounts.reduce((s,a)=>s+a.balance,0);
+  let bal=0;
   const debts=S.debts.map(d=>({left:d.amount-debtPaid(d),per:d.amount/d.payments,next:d.next}));
   const lines=[...S.budget.income.map(i=>[i,1]),...S.budget.expenses.flatMap(g=>g.items.map(i=>[i,-1]))];
   const oneOffLeft=S.budget.expenses.flatMap(g=>g.items).filter(i=>i.monthly==null).reduce((s,i)=>s+Math.max(0,annual(i)-(ytd.byCat[i.id]||0)),0);
@@ -214,7 +214,7 @@ function alerts(){
   S.debts.forEach(d=>{const left=d.amount-debtPaid(d);if(left<=0)return;const amt=Math.min(left,d.amount/d.payments);
     if(d.next<todayS)out.push(["bad",`תשלום באיחור: ${esc(d.name)} – <span class="num">${ils(amt)}</span>, היה אמור לצאת ב־${grDate(d.next)}`,"#debts"]);
     else if(d.next<=week)out.push(["warn",`תשלום קרוב: ${esc(d.name)} – <span class="num">${ils(amt)}</span> ב־${grDate(d.next)} (${heDate(d.next)})`,"#debts"])});
-  if(YEAR===THIS_YEAR){const f=forecast(3).find(r=>r.end<0);if(f)out.push(["bad",`לפי התחזית, בסוף ${f.label} היתרה בבנק תהיה <span class="num">${ils(f.end)}</span>`,"#dashboard"])}
+  if(YEAR===THIS_YEAR){const f=forecast(3).find(r=>r.end<0);if(f)out.push(["bad",`לפי התחזית, בסוף ${f.label} ההוצאות יעברו את ההכנסות ב־<span class="num">${ils(Math.abs(f.end))}</span>`,"#dashboard"])}
   const unc=S.tx.filter(x=>!x.cat).length;
   if(unc)out.push(["warn",`${unc} תנועות מחכות לסיווג`,"#transactions","unc"]);
   ["elec","water"].forEach(k=>{const miss=[];for(let i=0;i<CUR;i++){const b=(S.meorot.bills[i]||{})[k];if(b==null||b==="")miss.push(MONTHS[i][0])}
@@ -249,11 +249,12 @@ function noteUI(kind,id,note){
 
 // ---------- small dashboards: totals, by month, by budget line ----------
 const kindOf=(x,items)=>x.cat&&items[x.cat]?items[x.cat].kind:(x.amount>=0?"income":"expense");
-function bars(obj,color,items){
+function bars(obj,color,items,key){
   const rows=Object.entries(obj).filter(([,v])=>Math.abs(v)>=1).sort((a,b)=>b[1]-a[1]);if(!rows.length)return '<p class="muted" style="margin:0">אין</p>';
-  const top=rows.slice(0,7),rest=rows.slice(7).reduce((s,[,v])=>s+v,0);if(rest)top.push(["__rest",rest]);
+  const all=moreBars.has(key),top=all?rows:rows.slice(0,7),rest=all?0:rows.slice(7).reduce((s,[,v])=>s+v,0);if(rest)top.push(["__rest",rest]);
+  const btn=rows.length>7?`<p class="more"><button type="button" class="linkbtn" data-morebars="${key}">${all?"הצגת פחות":`הצגת כל ${rows.length} הסעיפים`}</button></p>`:"";
   const max=Math.max(...top.map(([,v])=>v),1);
-  return top.map(([c,v])=>`<div class="hbar"><span class="hl">${c==="__rest"?"שאר הסעיפים":c?esc(catName(c,items)):"לא מסווג"}</span><span class="ht"><i style="width:${Math.max(1,v/max*100).toFixed(1)}%;background:${color}"></i></span><span class="hv num">${ils(v)}</span></div>`).join("");
+  return top.map(([c,v])=>`<div class="hbar"><span class="hl">${c==="__rest"?"שאר הסעיפים":c?esc(catName(c,items)):"לא מסווג"}</span><span class="ht"><i style="width:${Math.max(1,v/max*100).toFixed(1)}%;background:${color}"></i></span><span class="hv num">${ils(v)}</span></div>`).join("")+btn;
 }
 function miniDash(list,withChart){
   const items=allItems(),bi={},be={},byMonth=MONTHS.map(()=>({inc:0,exp:0}));let inc=0,exp=0;
@@ -265,7 +266,7 @@ function miniDash(list,withChart){
       <div class="kpi"><div class="label">הפרש</div><div class="value num" style="color:${inc-exp<0?"var(--bad)":"var(--good)"}">${ils(inc-exp)}</div></div>
       <div class="kpi"><div class="label">מספר תנועות</div><div class="value num">${list.length.toLocaleString("he-IL")}</div></div></div>
     ${withChart?`<div class="chart-box">${chartSVG(byMonth,{inc:0,exp:0})}</div>`:""}
-    <div class="two dashbars"><div><h3>הכנסות לפי סעיף</h3>${bars(bi,"var(--income)",items)}</div><div><h3>הוצאות לפי סעיף</h3>${bars(be,"var(--expense)",items)}</div></div>`;
+    <div class="two dashbars"><div><h3>הכנסות לפי סעיף</h3>${bars(bi,"var(--income)",items,"mi")}</div><div><h3>הוצאות לפי סעיף</h3>${bars(be,"var(--expense)",items,"me")}</div></div>`;
 }
 
 // ---------- views ----------
@@ -291,7 +292,6 @@ function viewDashboard(){
   const al=alerts(),fc=YEAR===THIS_YEAR?forecast(3):[];
   const items=allItems(),bi={},be={};Object.entries(A.byCat).forEach(([c,v])=>{(items[c]&&items[c].kind==="income"?bi:be)[c]=v});
   return `<div class="kpis">
-    <div class="kpi"><div class="label">יתרה בבנקים</div><div class="value num">${ils(S.accounts.reduce((s,a)=>s+a.balance,0))}</div><div class="foot">${S.accounts.map(a=>`${esc(a.name)} <span class="num">${ils(a.balance)}</span>`).join(" · ")}<br>עודכן ב־${grDate(S.bankAsOf)} · <a href="#settings">לעדכון</a></div></div>
     <div class="kpi"><div class="label">מתחילת השנה: הכנסות מול הוצאות</div><div class="value num" style="color:${net<0?"var(--bad)":"var(--good)"}">${ils(net)}</div><div class="foot">נכנסו <span class="num">${ils(A.inc)}</span> · יצאו <span class="num">${ils(A.exp)}</span></div></div>
     <div class="kpi"><div class="label">תרומות מחו״ל</div><div class="value num">${ils(abroadYtd)}</div><div class="foot">החודש <span class="num">${ils(abroadMonth)}</span> · תקציב שנתי <span class="num">${ils(abroadBud)}</span><br><a href="#transactions" data-jump="i_abroad">לכל התרומות מחו״ל</a></div></div>
     <div class="kpi"><div class="label">תחזית שנתית לפי התקציב</div><div class="value num" style="color:${B.inc-B.exp<0?"var(--bad)":"var(--good)"}">${ils(B.inc-B.exp)}</div><div class="foot">${A.unc?`<a href="#transactions" data-jump="unc">${A.unc} תנועות מחכות לסיווג</a>`:"כל התנועות מסווגות"}</div></div>
@@ -309,14 +309,13 @@ function viewDashboard(){
     </tbody></table></div></details>
   </section>
   <section class="sheet"><div class="sheet-head"><h2>לאן הולך הכסף ומאיפה הוא מגיע</h2><span class="hint">מתחילת השנה</span></div>
-    <div class="two dashbars"><div><h3>הכנסות לפי סעיף</h3>${bars(bi,"var(--income)",items)}</div><div><h3>הוצאות לפי סעיף</h3>${bars(be,"var(--expense)",items)}</div></div></section>
-  ${fc.length?`<section class="sheet"><div class="sheet-head"><h2>תחזית תזרים – 3 חודשים קדימה</h2><span class="hint">כמה כסף צפוי להיות בבנק</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th>חודש</th><th class="n">צפוי להיכנס</th><th class="n">צפוי לצאת</th><th class="n">החזרי חובות</th><th class="n">יתרה צפויה בסוף החודש</th></tr></thead><tbody>
-      <tr><td class="muted">היום</td><td></td><td></td><td></td><td class="n num">${ils(S.accounts.reduce((s,a)=>s+a.balance,0))}</td></tr>
+    <div class="two dashbars"><div><h3>הכנסות לפי סעיף</h3>${bars(bi,"var(--income)",items,"di")}</div><div><h3>הוצאות לפי סעיף</h3>${bars(be,"var(--expense)",items,"de")}</div></div></section>
+  ${fc.length?`<section class="sheet"><div class="sheet-head"><h2>תחזית תזרים – 3 חודשים קדימה</h2><span class="hint">כמה כסף צפוי להיכנס ולצאת</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>חודש</th><th class="n">צפוי להיכנס</th><th class="n">צפוי לצאת</th><th class="n">החזרי חובות</th><th class="n">הפרש מצטבר מהיום</th></tr></thead><tbody>
       ${fc.map((r,k)=>`<tr><td>${r.label}${k===0?" (מה שנשאר)":""}</td><td class="n num">${ils(r.inc)}</td><td class="n num">${ils(r.exp)}</td><td class="n num">${ils(r.debt)}</td>
         <td class="n"><span class="num" style="font-weight:700;color:${r.end<0?"var(--bad)":"var(--good)"}">${ils(r.end)}</span>${r.end<0?' <span class="chip bad">חוסר</span>':""}</td></tr>`).join("")}
     </tbody></table></div>
-    <p class="hint">היתרה בבנק היום, ועוד ההכנסות החודשיות לפי התקציב, פחות ההוצאות החודשיות ותשלומי החובות. הוצאות חד פעמיות שעוד לא יצאו מתחלקות על החודשים שנשארו. שכירות ודתות לא נכללות, כי הן מתקזזות מול המשכיר.</p>
+    <p class="hint">ההכנסות החודשיות לפי התקציב, פחות ההוצאות החודשיות ותשלומי החובות. הוצאות חד פעמיות שעוד לא יצאו מתחלקות על החודשים שנשארו. שכירות ודתות לא נכללות, כי הן מתקזזות מול המשכיר.</p>
   </section>`:""}
   <div class="two">
     <section class="sheet"><div class="sheet-head"><h2>הוצאות: תקציב מול ביצוע</h2><span class="hint">הקו = כמה מהשנה עבר (${Math.round(PACE*100)}%)</span></div><div class="bva">${groupRows}</div></section>
@@ -655,8 +654,8 @@ function viewStudents(){
       <button class="linkbtn" data-togunlinked>${showUnlinked?"הסתרה":"הצגה"}</button></div>
     ${showUnlinked?(S.students.length?`<p class="hint" style="margin-top:0">בוחרים לכל תשלום של איזה בחור הוא. המערכת זוכרת את המשלם, ומשייכת לבד גם את שאר התשלומים שלו – עכשיו ובעתיד.</p>
     <div class="tbl-wrap"><table><thead><tr><th>תאריך</th><th>משלם</th><th class="n">סכום</th><th>של איזה בחור</th></tr></thead><tbody>
-    ${unlinked.slice(0,60).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td><td>${ed?`<select data-linkstu="${x.id}" aria-label="של איזה בחור">${stuOpts("")}</select>`:""}</td></tr>`).join("")}
-    </tbody></table></div>${unlinked.length>60?`<p class="hint">מוצגים 60 הראשונים. אחרי השיוך יופיעו הבאים.</p>`:""}`:'<p class="muted">קודם מוסיפים את הבחורים למטה, ואז משייכים כאן את התשלומים.</p>'):""}</section>`:""}
+    ${unlinked.slice(0,unlinkedShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td><td>${ed?`<select data-linkstu="${x.id}" aria-label="של איזה בחור">${stuOpts("")}</select>`:""}</td></tr>`).join("")}
+    </tbody></table></div>${unlinked.length>unlinkedShown?`<p class="more"><button class="btn ghost" data-moreunlinked>הצגת עוד ${Math.min(60,unlinked.length-unlinkedShown)} (מתוך ${unlinked.length})</button></p>`:""}`:'<p class="muted">קודם מוסיפים את הבחורים למטה, ואז משייכים כאן את התשלומים.</p>'):""}</section>`:""}
   <section class="sheet">
   ${ed?`<details class="addbox inner" data-open="stu"${openAdd.has("stu")?" open":""}><summary><span class="plus">+</span> הוספת בחור</summary><form class="form" id="stuForm">
     <label for="sName">שם הבחור<input id="sName" required></label>
@@ -690,7 +689,7 @@ function viewDonors(){
     <p class="muted">הרשימה מתמלאת אוטומטית מנדרים פלוס.</p></section>`;
   const act=S.donors.filter(d=>d.status==="active"),failed=S.donors.filter(d=>d.status==="failed");
   const list=S.donors.filter(d=>(!q||d.name.includes(q)||(d.city||"").includes(q))&&(DF.f==="all"||d.status===DF.f)).sort((a,b)=>b.ytd-a.ytd);
-  const shown=list.slice(0,150);
+  const shown=list.slice(0,donorShown);
   return `<section class="sheet"><div class="sheet-head"><h2>תורמים</h2><span class="hint">מתעדכן אוטומטית מנדרים פלוס</span></div>
     <div class="summary"><div><div class="label">הוראות קבע פעילות · ${act.length}</div><div class="value num">${ils(act.reduce((s,d)=>s+(d.monthly||0),0))} לחודש</div></div>
     <div><div class="label">הוראות קבע שנכשלו</div><div class="value num" style="color:${failed.length?"var(--bad)":"var(--good)"}">${failed.length}</div><div class="hint">${failed.length?`הכנסה חודשית שנעצרה: <span class="num">${ils(failed.reduce((s,d)=>s+(d.monthly||0),0))}</span>`:"הכול תקין"}</div></div>
@@ -708,7 +707,7 @@ function viewDonors(){
     <td><span class="num">${grDate(d.last)}</span></td>
     <td>${d.note?`<div style="font-size:.85rem">${esc(d.note)}</div>`:""}${d.status==="failed"||d.status==="ended"?(d.handled?'<span class="chip good">✓ טופל</span>':(ed?`<button class="btn ghost small" data-handled="${esc(d.id)}">סימון שטופל</button>`:'<span class="chip warn">ממתין לטיפול</span>')):""}</td></tr>
     ${open?`<tr class="panel"><td colspan="8"><h3>התרומות של ${esc(d.name)} השנה</h3><table><thead><tr><th>תאריך</th><th>תיאור</th><th class="n">סכום</th></tr></thead><tbody>${donorTx(d).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(x.desc)}</td><td class="n num">${ils(x.amount)}</td></tr>`).join("")||'<tr><td colspan="3" class="muted">אין תרומות השנה</td></tr>'}</tbody></table></td></tr>`:""}`}).join("")||`<tr><td colspan="8" class="muted">לא נמצאו תורמים</td></tr>`}
-  </tbody></table></div>${list.length>shown.length?`<p class="hint">מוצגים 150 מתוך ${list.length}. אפשר לחפש לפי שם.</p>`:""}</section>`;
+  </tbody></table></div>${list.length>shown.length?`<p class="more"><button class="btn ghost" data-moredonors>הצגת עוד ${Math.min(150,list.length-shown.length)} (מתוך ${list.length})</button></p>`:""}</section>`;
 }
 
 // ---------- reports: any date range ----------
@@ -842,10 +841,6 @@ function viewSettings(){
   const fmtTs=ts=>{const d=new Date(ts);return isNaN(d)?"":`${grDate(iso(d))} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`};
   const qs=S.questions||[];
   return `<div class="conn">
-  <section class="sheet"><div class="sheet-head"><h2>יתרות בנק</h2><span class="hint">עודכן ב־${grDate(S.bankAsOf)}</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th>בנק</th><th>שימוש</th><th class="n">יתרה</th></tr></thead><tbody>
-    ${S.accounts.map(a=>`<tr><td>${esc(a.name)}</td><td class="muted">${esc(a.note)}</td><td class="n">${ed?`<input class="small num" data-bal="${a.id}" type="number" value="${a.balance}" aria-label="יתרה ב${esc(a.name)}">`:`<span class="num">${ils(a.balance)}</span>`}</td></tr>`).join("")}</tbody></table></div>
-    <p class="hint">היתרה משמשת לתחזית התזרים.</p></section>
   ${nedarimBox(ed,fmtTs)}
   </div>
   <section class="sheet"><div class="sheet-head"><h2>כללי סיווג אוטומטיים</h2><span class="hint">אם התיאור מכיל את המילה, התנועה משויכת לסעיף</span></div>
@@ -1037,6 +1032,9 @@ app.addEventListener("click",e=>{
   else if(t.hasAttribute("data-canceltx")){editTx=null;render()}
   else if(d.deltx){const x=S.tx.find(x=>x.id===d.deltx);if(!confirm(`למחוק את התנועה "${x.desc}" (${ils(x.amount)})?`))return;S.tx=S.tx.filter(y=>y!==x);selTx.delete(x.id);if(x.rcpt)W.delReceipt(x.id);commit(`תנועות: נמחקה "${x.desc}" (${ils(x.amount)})`,["tx",x.id,"del"])}
   else if(t.hasAttribute("data-moretx")){txShown+=100;render()}
+  else if(t.hasAttribute("data-moredonors")){donorShown+=150;render()}
+  else if(t.hasAttribute("data-moreunlinked")){unlinkedShown+=60;render()}
+  else if(d.morebars){moreBars.has(d.morebars)?moreBars.delete(d.morebars):moreBars.add(d.morebars);render()}
   else if(d.bulk){const xs=S.tx.filter(x=>selTx.has(x.id));
     if(d.bulk==="none"){selTx.clear();render()}
     else if(d.bulk==="cat"){const c=document.getElementById("bulkCat").value;xs.forEach(x=>x.cat=c);selTx.clear();commit(`תנועות: ${xs.length} תנועות סווגו ל"${catName(c)||"לא מסווג"}"`,...xs.map(x=>["tx",x]))}
@@ -1059,6 +1057,7 @@ app.addEventListener("click",e=>{
 function applySug(i,avg){const g=groupOf(i.id);
   if(i.per&&g&&g.heads){i.unit=Math.round(avg/((i.monthly!=null?(+i.months||12):1)*g.heads));applyHeads(g)}
   else if(i.monthly!=null)i.monthly=Math.round(avg/(+i.months||12));else i.annual=Math.round(avg)}
+document.addEventListener("input",e=>{const t=e.target;if(t.type!=="email")return;const c=t.value.replace(/[\s ​-‏‪-‮⁠-⁩﻿]/g,"");if(c!==t.value)t.value=c},true);
 app.addEventListener("input",e=>{const id=e.target.id;if(id==="bq")BF.q=e.target.value;else if(id==="sq")SF.q=e.target.value;else if(id==="dq")DF.q=e.target.value;else if(id==="tq"){TF.q=e.target.value;txShown=100}else return;render()});
 // the arrows of a number field fire a change on every click: wait until the clicking stops,
 // then save once and log "first value ← last value"
