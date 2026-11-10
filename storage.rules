@@ -1,0 +1,11 @@
+rules_version = '2';
+// Screenshots and screen recordings attached to a question for the developer.
+// A signed-in user with a verified email may upload (up to 200MB a file). Nobody reads them from the app:
+// the server attaches them to the email, and they can also be opened from the Firebase console.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /questions/{qid}/{file} {
+      allow create: if request.auth != null && request.auth.token.email_verified == true && request.resource.size < 200 * 1024 * 1024;
+    }
+  }
+}

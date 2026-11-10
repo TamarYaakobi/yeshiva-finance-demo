@@ -1,0 +1,40 @@
+rules_version = '2';
+// Who may do what:
+//  - the yeshiva account (admin@example.com) – everything, always
+//  - roles/<email>: rosh / menahel / mazkir / dev (developer) – read and change everything; roeh (accountant) – read only
+//  - everyone must have a verified email address
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function verified() { return request.auth != null && request.auth.token.email_verified == true; }
+    function email() { return request.auth.token.email.lower(); }
+    function isOwner() { return verified() && email() == 'admin@example.com'; }
+    function roleDoc() { return /databases/$(database)/documents/roles/$(email()); }
+    function hasRole() { return verified() && exists(roleDoc()); }
+    function reader() { return isOwner() || hasRole(); }
+    function editor() { return isOwner() || (hasRole() && get(roleDoc()).data.role in ['rosh', 'menahel', 'mazkir', 'dev']); }
+
+    match /roles/{e} {
+      allow get: if verified() && e == email();
+      allow read: if reader();
+      allow write: if editor();
+    }
+    // the change log can only be added to, under your own name
+    match /log/{id} {
+      allow read: if reader();
+      allow create: if editor() && request.resource.data.email == email();
+    }
+    // questions to the developer: anyone with access may ask, under their own name; the server emails them
+    match /questions/{id} {
+      allow read: if reader();
+      allow create: if reader() && request.resource.data.email == email();
+    }
+    // written only by the Nedarim sync on the server
+    match /sync/{id} {
+      allow read: if reader();
+    }
+    match /{coll}/{id} {
+      allow read: if reader() && coll in ['meta', 'tx', 'debts', 'students', 'donors', 'meorot', 'building', 'receipts', 'years'];
+      allow write: if editor() && coll in ['meta', 'tx', 'debts', 'students', 'donors', 'meorot', 'building', 'receipts', 'years'];
+    }
+  }
+}

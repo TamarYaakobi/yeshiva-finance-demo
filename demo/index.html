@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>מערכת כספים – הדגמה</title>
+<meta name="description" content="גרסת הדגמה של מערכת לניהול כספים לישיבה – כל הנתונים בדויים.">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#4A3418">
+
+<link rel="icon" href="/demo-logo.svg">
+<link rel="apple-touch-icon" href="/demo-logo.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="מערכת כספים">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=Assistant:wght@400;600;700&display=swap">
+</head>
+<body>
+<div class="demo-bar" role="note"><b>גרסת הדגמה</b> · כל הנתונים בדויים · אפשר לערוך הכול – שום דבר לא נשמר, ורענון מחזיר להתחלה</div>
+<header class="top">
+  <div class="wrap">
+    <img class="logo" src="/demo-logo.svg" alt="">
+    <div class="brand">
+      <h1>ישיבת דמו</h1>
+      <div class="sub">מצב כספי · <span id="today"></span></div>
+    </div>
+    <div class="userbox" id="userbox" hidden></div>
+  </div>
+</header>
+<nav class="tabs" aria-label="ניווט" id="tabs" hidden><div class="wrap" id="nav"></div></nav>
+<main class="wrap" id="app" hidden></main>
+
+<main class="wrap" id="gate">
+  <section class="sheet login" id="gateBox"><p class="muted">טוען…</p></section>
+</main>
+
+<footer class="credit no-print" dir="ltr"><a href="mailto:t3232853@gmail.com" title="פיתוח: תמר יעקבי">
+  <img src="/tamar-build-icon.svg" alt="" width="22" height="22">
+  <span class="by">built with</span> <b class="tb">tamar<i>.</i><em>build</em><i>()</i></b>
+</a></footer>
+
+<nav class="bottom" id="bnav" aria-label="ניווט" hidden></nav>
+<div class="more-menu" id="more" hidden><div class="panel"><div class="grab"></div><div id="moreList"></div></div></div>
+<div class="tip" id="tip" hidden></div>
+<div class="viewer" id="viewer" hidden><div class="vbox"><button class="btn ghost small" id="vclose" style="align-self:flex-start">סגירה ✕</button><div id="vbody"></div></div></div>
+<script type="module" src="../src/demo.js"></script>
+</body>
+</html>
