@@ -141,7 +141,7 @@ const W={
   fileUrl:path=>Promise.resolve(files[path]||URL.createObjectURL(new Blob(['<meta charset="utf-8"><body dir="rtl" style="font-family:sans-serif;padding:40px"><h2>מסמך לדוגמה</h2><p>בגרסת ההדגמה אין קבצים אמיתיים. אפשר לצרף קובץ משלך – הוא נשאר רק בדפדפן.</p>'],{type:"text/html"}))),
   delFile:path=>{delete files[path];return Promise.resolve()},
   loadRange:async(from,to)=>({tx:S.tx.filter(x=>x.date>=from&&x.date<=to),meo:S.meorot.entries.filter(x=>x.date>=from&&x.date<=to)}),
-  sendQuestion:async()=>{alert("זו גרסת הדגמה – השאלה לא נשלחה. במערכת האמיתית היא נשלחת במייל למתכנת, עם צילומי המסך וההקלטה.")}
+  sendQuestion:async()=>{alert("זו גרסת הדגמה – השאלה לא נשלחה. במערכת האמיתית היא נשלחת במייל למתכנתת, עם צילומי המסך וההקלטה.")}
 };
 
 // ---------- the page: a role switcher instead of a sign-in ----------
@@ -152,7 +152,7 @@ const me={email:"admin@demo.example",name:"משתמש הדגמה"};
 function userBox(){
   $("userbox").hidden=false;
   $("userbox").innerHTML=`<label class="demo-role"><span class="lbl">צפייה בתור </span><select id="roleSel" aria-label="צפייה בתור">${Object.entries(ROLE_NAMES).map(([k,l])=>`<option value="${k}"${k===role?" selected":""}>${l}</option>`).join("")}</select></label>
-    <button class="btn ghost small" id="askBtn" title="שאלה למתכנת">❓<span class="lbl"> שאלה למתכנת</span></button>
+    <button class="btn ghost small" id="askBtn" title="עזרה והדרכה"><svg class="hico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13v-1a8 8 0 0 1 16 0v1"/><rect x="3" y="13" width="4" height="6" rx="1.5"/><rect x="17" y="13" width="4" height="6" rx="1.5"/><path d="M19 19c0 1.5-2 2.5-5 2.5"/></svg><span class="lbl"> עזרה והדרכה</span></button>
     <button class="btn ghost small" id="resetBtn" title="חזרה לנתונים המקוריים">↺<span class="lbl"> איפוס</span></button>`;
   $("roleSel").onchange=e=>{role=e.target.value;boot({S,role,me,W});render()};
   $("askBtn").onclick=()=>openAsk();

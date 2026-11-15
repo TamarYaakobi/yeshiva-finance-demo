@@ -454,3 +454,5 @@ label.btn{cursor:pointer;display:inline-flex;align-items:center;justify-content:
   .filters .sep{display:none}
 }
 .form label.wide{grid-column:1/-1}
+#askBtn{display:inline-flex;align-items:center;gap:4px}
+.hico{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;flex:none}

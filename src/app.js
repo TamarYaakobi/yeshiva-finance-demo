@@ -102,7 +102,7 @@ const CMP={sel:null,mode:"same"};
 export const BRAND={name:"",org:"",logo:"/logo.jpg",nedarim:"",owner:""};
 export function setBrand(b){Object.assign(BRAND,b);OWNER=b.owner||OWNER}
 const ROLES={rosh:{edit:true,views:"all"},menahel:{edit:true,views:"all"},mazkir:{edit:true,views:"all"},dev:{edit:true,views:"all"},roeh:{edit:false,views:"all"}};
-const ROLE_NAMES={rosh:"ראש הישיבה",menahel:"מנהל הישיבה",mazkir:"מזכיר",dev:"מתכנת",roeh:"רואה חשבון"};
+const ROLE_NAMES={rosh:"ראש הישיבה",menahel:"מנהל הישיבה",mazkir:"מזכיר",dev:"מתכנתת",roeh:"רואה חשבון"};
 const can=()=>ROLES[role];
 const VIEWS=[["dashboard","לוח בקרה"],["budget","תקציב"],["transactions","תנועות"],["students","שכר לימוד"],["donors","תורמים"],["debts","חובות וגמ״חים"],["meorot","המשכיר"],["building","קרן הבניין"],["reports","דוחות והשוואות"],["settings","הגדרות והרשאות"]];
 
@@ -940,7 +940,7 @@ function viewSettings(){
     <div class="tbl-wrap"><table><thead><tr><th>כשהתיאור מכיל</th><th>שייך לסעיף</th>${ed?"<th></th>":""}</tr></thead><tbody>
     ${S.rules.map((r,i)=>`<tr><td>״${esc(r.kw)}״</td><td>${esc(catName(r.cat,items)||r.cat)}</td>${ed?`<td>${ico("del",`data-delrule="${i}"`,"מחיקת הכלל")}</td>`:""}</tr>`).join("")}
     </tbody></table></div></section>
-  <section class="sheet"><div class="sheet-head"><h2>משתמשים והרשאות</h2><span class="hint">ראש הישיבה, מנהל הישיבה, המזכיר והמתכנת יכולים הכול · רואה חשבון רק צופה</span></div>
+  <section class="sheet"><div class="sheet-head"><h2>משתמשים והרשאות</h2><span class="hint">ראש הישיבה, מנהל הישיבה, המזכיר והמתכנתת יכולים הכול · רואה חשבון רק צופה</span></div>
     ${ed?`<form class="form" id="userForm">
       <label for="uName">שם<input id="uName" required></label>
       <label for="uEmail">כתובת מייל<input id="uEmail" type="email" required dir="ltr"></label>
@@ -952,7 +952,7 @@ function viewSettings(){
     ${S.users.map(u=>`<tr><td>${esc(u.name)}</td><td dir="ltr" style="text-align:right">${esc(u.id)}</td><td>${ed&&u.id!==me.email?`<select data-urole="${esc(u.id)}" aria-label="תפקיד">${Object.entries(ROLE_NAMES).map(([k,l])=>`<option value="${k}"${u.role===k?" selected":""}>${l}</option>`).join("")}</select>`:esc(ROLE_NAMES[u.role]||u.role)}</td>
       ${ed?`<td>${u.id!==me.email?ico("del",`data-deluser="${esc(u.id)}"`,"הסרת המשתמש"):""}</td>`:""}</tr>`).join("")}
     </tbody></table></div></section>
-  ${qs.length&&(role==="dev"||me.email===OWNER)?`<section class="sheet"><div class="sheet-head"><h2>שאלות למתכנת</h2></div>
+  ${qs.length&&(role==="dev"||me.email===OWNER)?`<section class="sheet"><div class="sheet-head"><h2>פניות לעזרה והדרכה</h2></div>
     <div class="tbl-wrap"><table><thead><tr><th>מתי</th><th>מי</th><th>מסך</th><th>שאלה</th><th>קבצים</th><th>מייל</th></tr></thead><tbody>
     ${qs.map(x=>`<tr><td><span class="num">${fmtTs(x.ts)}</span></td><td>${esc(x.name||x.email)}</td><td>${esc(x.page)}</td><td style="white-space:pre-wrap">${esc(x.text)}</td><td>${(x.files||[]).length}</td><td>${x.emailed?'<span class="chip good">נשלח</span>':x.emailError?`<span class="chip warn" title="${esc(x.emailError)}">לא נשלח</span>`:'<span class="chip neutral">ממתין</span>'}</td></tr>`).join("")}
     </tbody></table></div></section>`:""}
@@ -965,13 +965,16 @@ function viewSettings(){
 
 // ---------- question to the developer: text, the screen it's about, screenshots and screen recordings ----------
 let askFiles=[],rec=null;
+// turn on once the email of help requests works (functions/.env MAIL_ENABLED=1 + secret GMAIL_APP_PASSWORD)
+const MAIL_READY=false;
 export function openAsk(){
   askFiles=[];
   const page=(VIEWS.find(v=>v[0]===current().v)||[])[1]||"";
   const canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia&&window.MediaRecorder);
-  showViewer(`<form id="askForm" class="askform"><h2 style="color:var(--brown);margin:0 0 4px">שאלה למתכנת</h2>
+  showViewer(`<form id="askForm" class="askform"><h2 style="color:var(--brown);margin:0 0 4px">עזרה והדרכה</h2>
+    ${MAIL_READY?"":`<p class="notice">שליחת הפנייה במייל עדיין לא פועלת. הפנייה נשמרת במערכת, אבל עוד לא מגיעה במייל.</p>`}
     <p class="hint" style="margin:0 0 8px">המסך שאת/ה נמצא/ת בו יצורף לבד: <b>${esc(page)}</b></p>
-    <label for="askText">מה השאלה או מה לא עובד?<textarea id="askText" rows="5" required></textarea></label>
+    <label for="askText">במה אפשר לעזור? שאלה, בקשה או משהו שלא עובד<textarea id="askText" rows="5" required></textarea></label>
     <div class="filters">
       <label class="btn ghost small">📷 צילומי מסך / סרטון<input type="file" id="askFile" accept="image/*,video/*" multiple hidden></label>
       ${canRec?`<button type="button" class="btn ghost small" id="askShot">🖼 צילום המסך עכשיו</button><button type="button" class="btn ghost small" id="askRec">⏺ הקלטת מסך</button>`:""}
@@ -997,7 +1000,7 @@ export function openAsk(){
       rec.start(1000);rb.textContent="⏹ עצירת ההקלטה"}catch(e){}};
   document.getElementById("askForm").onsubmit=e=>{e.preventDefault();const btn=document.getElementById("askSend");btn.disabled=true;btn.textContent="שולח…";
     W.sendQuestion({text:document.getElementById("askText").value.trim(),page,hash:location.hash,year:YEAR,files:askFiles})
-      .then(()=>showViewer('<h2 style="color:var(--brown)">נשלח ✓</h2><p>השאלה נשלחה למתכנת, יחד עם הקבצים.</p>'),
+      .then(()=>showViewer(`<h2 style="color:var(--brown)">${MAIL_READY?"נשלח ✓":"נשמר ✓"}</h2><p>${MAIL_READY?"הפנייה נשלחה למתכנתת, יחד עם הקבצים.":"הפנייה נשמרה במערכת. שליחה במייל עדיין לא פועלת."}</p>`),
         err=>{btn.disabled=false;btn.textContent="שליחה";document.getElementById("askErr").textContent="השליחה נכשלה: "+(err.message||err)})};
 }
 

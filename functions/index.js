@@ -181,7 +181,7 @@ import nodemailer from "nodemailer";
 const MAIL_TO=process.env.DEVELOPER_EMAIL||"developer@example.com";
 const MAIL_ON=process.env.MAIL_ENABLED==="1";
 const GMAIL=MAIL_ON?defineSecret("GMAIL_APP_PASSWORD"):null;
-const ROLE_NAMES={rosh:"ראש הישיבה",menahel:"מנהל הישיבה",mazkir:"מזכיר",dev:"מתכנת",roeh:"רואה חשבון"};
+const ROLE_NAMES={rosh:"ראש הישיבה",menahel:"מנהל הישיבה",mazkir:"מזכיר",dev:"מתכנתת",roeh:"רואה חשבון"};
 const escH=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 export const questionMail=MAIL_ON?onDocumentCreated({document:"questions/{id}",secrets:[GMAIL],timeoutSeconds:300,memory:"512MiB"},async ev=>{
   const q=ev.data&&ev.data.data();if(!q)return;
