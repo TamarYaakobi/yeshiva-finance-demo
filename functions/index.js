@@ -213,7 +213,7 @@ const AI_ON=process.env.AI_ENABLED==="1";
 const GEMINI=defineSecret("GEMINI_API_KEY"); // always attached – the switch is AI_ENABLED
 const GUIDE=readFileSync(new URL("./help-guide.md",import.meta.url),"utf8");
 // tried in order: a model that is retired or busy (or out of its free daily quota) passes the question to the next
-const AI_MODELS=(process.env.GEMINI_MODELS||"gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite").split(",").map(s=>s.trim()).filter(Boolean);
+const AI_MODELS=(process.env.GEMINI_MODELS||"gemini-3.5-flash-lite,gemini-3.6-flash,gemini-3.8-flash").split(",").map(s=>s.trim()).filter(Boolean);
 const AI_DAILY=40; // questions per person per day
 const AI_RULES=`אתה העוזר של מערכת ניהול הכספים של ישיבה. אנשי הצוות שואלים אותך איך משתמשים במערכת.
 כללים:
@@ -227,7 +227,7 @@ const AI_RULES=`אתה העוזר של מערכת ניהול הכספים של �
 המדריך:
 ${GUIDE}`;
 const clip=(s,n)=>String(s??"").slice(0,n);
-export const helpChat=onCall({secrets:[GEMINI],timeoutSeconds:60},async req=>{
+export const helpChat=onCall({secrets:[GEMINI],timeoutSeconds:150},async req=>{
   const t=req.auth&&req.auth.token;
   if(!t||!t.email_verified)throw new HttpsError("unauthenticated","יש להתחבר");
   const email=String(t.email).toLowerCase();
@@ -243,17 +243,20 @@ export const helpChat=onCall({secrets:[GEMINI],timeoutSeconds:60},async req=>{
   if(!contents.length||contents[contents.length-1].role!=="user")throw new HttpsError("invalid-argument","אין שאלה");
   const last=contents[contents.length-1];
   last.parts[0].text=`(המסך הפתוח: ${clip(d.page,40)||"לא ידוע"}; תפקיד השואל: ${role})\n${last.parts[0].text}`;
-  const body=JSON.stringify({systemInstruction:{parts:[{text:AI_RULES}]},contents,generationConfig:{maxOutputTokens:1200}});
+  const body=JSON.stringify({systemInstruction:{parts:[{text:AI_RULES}]},contents,generationConfig:{maxOutputTokens:4096}});
   let lastErr="";
   for(const model of AI_MODELS){
+    const t0=Date.now();
     try{
-      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(GEMINI.value().trim())}`,{method:"POST",headers:{"Content-Type":"application/json"},body});
+      const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(GEMINI.value().trim())}`,{method:"POST",headers:{"Content-Type":"application/json"},body,signal:AbortSignal.timeout(35000)});
+      logger.info("helpChat",model,r.status,`${Date.now()-t0}ms`);
       if(!r.ok){lastErr=`${model} ${r.status}`;logger.warn("helpChat",lastErr,(await r.text()).slice(0,300));
         if([404,429,500,503].includes(r.status))continue;break}
       const j=await r.json(),c=(j.candidates||[])[0],text=((c&&c.content&&c.content.parts)||[]).map(p=>p.text||"").join("").trim();
       if(text)return {text,model};
+      logger.warn("helpChat empty",model,JSON.stringify(j).slice(0,500));
       lastErr=`${model} empty ${c&&c.finishReason}`;
-    }catch(e){lastErr=`${model} ${e.message}`;logger.warn("helpChat",lastErr)}
+    }catch(e){lastErr=`${model} ${e.name==="TimeoutError"?"timeout":e.message} after ${Date.now()-t0}ms`;logger.warn("helpChat",lastErr)}
   }
   logger.error("helpChat failed",lastErr);
   throw new HttpsError("unavailable","העוזר לא זמין כרגע");
