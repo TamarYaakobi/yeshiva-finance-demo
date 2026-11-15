@@ -210,7 +210,7 @@ export const questionMail=MAIL_ON?onDocumentCreated({document:"questions/{id}",s
 // The model gets only the guide and the question – never the yeshiva's numbers, names or personal details.
 import {readFileSync} from "node:fs";
 const AI_ON=process.env.AI_ENABLED==="1";
-const GEMINI=AI_ON?defineSecret("GEMINI_API_KEY"):null;
+const GEMINI=defineSecret("GEMINI_API_KEY"); // always attached – the switch is AI_ENABLED
 const GUIDE=readFileSync(new URL("./help-guide.md",import.meta.url),"utf8");
 // tried in order: a model that is retired or busy (or out of its free daily quota) passes the question to the next
 const AI_MODELS=(process.env.GEMINI_MODELS||"gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite").split(",").map(s=>s.trim()).filter(Boolean);
@@ -227,7 +227,7 @@ const AI_RULES=`אתה העוזר של מערכת ניהול הכספים של �
 המדריך:
 ${GUIDE}`;
 const clip=(s,n)=>String(s??"").slice(0,n);
-export const helpChat=onCall({secrets:GEMINI?[GEMINI]:[],timeoutSeconds:60},async req=>{
+export const helpChat=onCall({secrets:[GEMINI],timeoutSeconds:60},async req=>{
   const t=req.auth&&req.auth.token;
   if(!t||!t.email_verified)throw new HttpsError("unauthenticated","יש להתחבר");
   const email=String(t.email).toLowerCase();
