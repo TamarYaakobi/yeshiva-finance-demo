@@ -2,6 +2,7 @@
 // Nothing here talks to a server – a refresh starts over.
 import "./style.css";
 import {boot,render,openAsk,YEAR,THIS_YEAR,newYearMeta,setBrand} from "./app.js";
+import GUIDE from "../functions/help-guide.md?raw";
 
 setBrand({name:"ישיבת דמו",org:"עמותה לדוגמה ע״ר",logo:"/demo-logo.svg",nedarim:"מוסד 0000000 · חשבון הדגמה",owner:"admin@demo.example"});
 
@@ -136,6 +137,12 @@ const W={
   delReceipt:id=>{delete receipts[id];return Promise.resolve()},
   syncNow:()=>new Promise(r=>setTimeout(()=>{S.sync={...S.sync,lastRun:new Date().toISOString()};r({newTx:0})},1200)),
   moreLog(){},
+  // no AI in the demo: the section of the user guide that best matches the question
+  helpChat:async({messages})=>{await new Promise(r=>setTimeout(r,700));
+    const q=messages[messages.length-1].text,words=q.replace(/[?!.,"'״׳]/g," ").split(/\s+/).filter(w=>w.length>2).map(w=>w.replace(/^[והבלמש](?=.{3})/,""));
+    const parts=GUIDE.split(/\n(?=#{2,3} )/).slice(1).map(p=>({p,score:words.reduce((s,w)=>s+(p.includes(w)?1:0),0)})).sort((a,b)=>b.score-a.score);
+    const best=parts[0]&&parts[0].score?parts[0].p.replace(/^#+ /,"").replace(/\n#+ /g,"\n").trim():"לא מצאתי במדריך תשובה לשאלה הזו. במערכת האמיתית אפשר ללחוץ \"לא עזר? פנייה למתכנתת\".";
+    return {text:"בגרסת ההדגמה אין AI אמיתי – הנה הקטע המתאים מהמדריך:\n\n"+best.slice(0,1800)}},
   // the student file: photos and documents stay in this browser tab
   upload:(path,blob)=>{files[path]=URL.createObjectURL(blob);return Promise.resolve()},
   fileUrl:path=>Promise.resolve(files[path]||URL.createObjectURL(new Blob(['<meta charset="utf-8"><body dir="rtl" style="font-family:sans-serif;padding:40px"><h2>מסמך לדוגמה</h2><p>בגרסת ההדגמה אין קבצים אמיתיים. אפשר לצרף קובץ משלך – הוא נשאר רק בדפדפן.</p>'],{type:"text/html"}))),

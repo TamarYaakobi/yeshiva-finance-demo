@@ -967,21 +967,61 @@ function viewSettings(){
 let askFiles=[],rec=null;
 // turn on once the email of help requests works (functions/.env MAIL_ENABLED=1 + secret GMAIL_APP_PASSWORD)
 const MAIL_READY=false;
+// ---------- help: an AI helper that knows the user guide; the developer is one click away ----------
+let helpMsgs=[],helpBusy=false,helpErr="";
+const curPage=()=>(VIEWS.find(v=>v[0]===current().v)||[])[1]||"";
+const HELP_EXAMPLES=["איך משייכים תשלום שכר לימוד לבחור?","איך מצרפים קבלה להוצאה?","איך מוציאים דוח לרואה החשבון?"];
+// the answer is plain text with **bold** and numbered lines – shown safely, never as HTML
+const helpHtml=t=>esc(t).replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/\n/g,"<br>");
+function helpLog(){
+  const log=document.getElementById("helpLog");if(!log)return;
+  log.innerHTML=(helpMsgs.length?helpMsgs.map(m=>`<div class="hmsg ${m.role==="model"?"bot":"me"}">${helpHtml(m.text)}</div>`).join("")
+    :`<div class="hmsg bot">שלום! אפשר לשאול אותי כל שאלה על השימוש במערכת.</div><div class="hex">${HELP_EXAMPLES.map(q=>`<button type="button" class="chipbtn" data-hq="${esc(q)}">${esc(q)}</button>`).join("")}</div>`)
+    +(helpBusy?'<div class="hmsg bot typing"><span></span><span></span><span></span></div>':"")
+    +(helpErr?`<div class="hmsg err">${esc(helpErr)}</div>`:"");
+  log.scrollTop=log.scrollHeight;
+}
+function helpAsk(q){
+  q=String(q||"").trim();if(!q||helpBusy)return;
+  helpMsgs.push({role:"user",text:q});helpBusy=true;helpErr="";helpLog();
+  W.helpChat({messages:helpMsgs.slice(-10),page:curPage()})
+    .then(r=>{helpMsgs.push({role:"model",text:r.text})},
+      e=>{helpMsgs.pop();helpErr=(e&&e.message&&!/^internal$/i.test(e.message)?e.message:"העוזר לא זמין כרגע")+". אפשר לנסות שוב, או ללחוץ \"לא עזר? פנייה למתכנתת\".";
+        const box=document.getElementById("helpQ");if(box&&!box.value)box.value=q})
+    .finally(()=>{helpBusy=false;helpLog()});
+}
 export function openAsk(){
+  helpErr="";
+  showViewer(`<div class="helpchat"><h2 style="color:var(--brown);margin:0 0 2px">עזרה והדרכה</h2>
+    <p class="hint" style="margin:0 0 8px">העוזר עונה לפי מדריך המערכת. הוא לא רואה את הנתונים של הישיבה.</p>
+    <div id="helpLog" class="helplog" aria-live="polite"></div>
+    <form id="helpForm" class="helpform"><textarea id="helpQ" rows="2" placeholder="כתבו כאן שאלה…" aria-label="שאלה לעוזר"></textarea><button class="btn" type="submit">שליחה</button></form>
+    <p class="helpfoot"><button type="button" class="linkbtn" id="helpDev">לא עזר? פנייה למתכנתת</button>${helpMsgs.length?` · <button type="button" class="linkbtn" id="helpNew">שיחה חדשה</button>`:""}</p></div>`);
+  helpLog();
+  const box=document.getElementById("helpQ");
+  document.getElementById("helpForm").onsubmit=e=>{e.preventDefault();const q=box.value;box.value="";helpAsk(q)};
+  box.onkeydown=e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();document.getElementById("helpForm").requestSubmit()}};
+  document.getElementById("helpLog").onclick=e=>{const b=e.target.closest("[data-hq]");if(b)helpAsk(b.dataset.hq)};
+  document.getElementById("helpDev").onclick=()=>openDevForm([...helpMsgs].reverse().find(m=>m.role==="user")?.text||box.value);
+  const nw=document.getElementById("helpNew");if(nw)nw.onclick=()=>{helpMsgs=[];openAsk()};
+}
+function openDevForm(prefill){
   askFiles=[];
-  const page=(VIEWS.find(v=>v[0]===current().v)||[])[1]||"";
+  const page=curPage();
   const canRec=!!(navigator.mediaDevices&&navigator.mediaDevices.getDisplayMedia&&window.MediaRecorder);
   showViewer(`<form id="askForm" class="askform"><h2 style="color:var(--brown);margin:0 0 4px">עזרה והדרכה</h2>
     ${MAIL_READY?"":`<p class="notice">שליחת הפנייה במייל עדיין לא פועלת. הפנייה נשמרת במערכת, אבל עוד לא מגיעה במייל.</p>`}
     <p class="hint" style="margin:0 0 8px">המסך שאת/ה נמצא/ת בו יצורף לבד: <b>${esc(page)}</b></p>
-    <label for="askText">במה אפשר לעזור? שאלה, בקשה או משהו שלא עובד<textarea id="askText" rows="5" required></textarea></label>
+    <label for="askText">במה אפשר לעזור? שאלה, בקשה או משהו שלא עובד<textarea id="askText" rows="5" required>${esc(prefill||"")}</textarea></label>
     <div class="filters">
       <label class="btn ghost small">📷 צילומי מסך / סרטון<input type="file" id="askFile" accept="image/*,video/*" multiple hidden></label>
       ${canRec?`<button type="button" class="btn ghost small" id="askShot">🖼 צילום המסך עכשיו</button><button type="button" class="btn ghost small" id="askRec">⏺ הקלטת מסך</button>`:""}
     </div>
     <div id="askList" class="hint"></div>
     <div class="err" id="askErr" role="alert"></div>
-    <button class="btn" type="submit" id="askSend">שליחה</button></form>`);
+    <button class="btn" type="submit" id="askSend">שליחה</button>
+    <p class="helpfoot"><button type="button" class="linkbtn" id="askBack">→ חזרה לעוזר</button></p></form>`);
+  document.getElementById("askBack").onclick=()=>openAsk();
   const list=()=>{document.getElementById("askList").innerHTML=askFiles.map((f,i)=>`<span class="tag">${esc(f.name)} · ${(f.size/1048576).toFixed(1)}MB <button type="button" class="linkbtn" data-rmask="${i}">הסרה</button></span>`).join(" ")};
   const add=f=>{if(f.size>200*1048576){document.getElementById("askErr").textContent=`${f.name} גדול מ־200MB`;return}askFiles.push(f);list()};
   document.getElementById("askFile").onchange=e=>{[...e.target.files].forEach(add);e.target.value=""};
