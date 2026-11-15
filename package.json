@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "read-excel-file": "^9.3.17"
   }
 }

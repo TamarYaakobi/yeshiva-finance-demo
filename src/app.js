@@ -87,14 +87,14 @@ let W=null; // set by main.js once signed in
 const TF={month:String(CUR),src:"all",type:"all",cat:"all",q:"",from:"",to:""};
 const BF={q:"",group:"all"};
 let debtUrg="all",openDebts=new Set(),editDebt=null,noteEdit=null,focusAfter=null,editTx=null,txShown=100;
-const selTx=new Set(),selDonors=new Set(),moreBars=new Set();let donorShown=150,unlinkedShown=60;
+const selTx=new Set(),selDonors=new Set(),moreBars=new Set();let donorShown=150,unlinkedShown=60,viaShown=50;
 const openAdd=new Set(); // "add" boxes the user opened, kept open across redraws
 // groups the user folded (budget, report, comparison) – remembered on this device only
 const closed=new Set((()=>{try{return JSON.parse(localStorage.getItem("tt-closed"))||[]}catch(e){return []}})());
 const saveClosed=()=>{try{localStorage.setItem("tt-closed",JSON.stringify([...closed]))}catch(e){}};
 const grpHead=(k,label,total,count,cols,locked,extra)=>{const open=locked||!closed.has(k);
   return `<tr class="group"><td colspan="${cols}"><div class="grprow"><button class="grp" type="button" data-grp="${esc(k)}" aria-expanded="${open}"${locked?" disabled":""}><span class="caret" aria-hidden="true">◀</span><span class="gname">${esc(label)}</span><span class="gsum"><span class="num">${ils(total)}</span> · ${count} סעיפים</span></button>${extra||""}</div></td></tr>`};
-const SF={q:"",f:"all",shiur:"all"},DF={q:"",f:"all"};let openStu=new Set(),openDonor=new Set(),showUnlinked=true;
+const SF={q:"",f:"all",shiur:"all",act:"active"},DF={q:"",f:"all"};let openStu=new Set(),openDonor=new Set(),showUnlinked=true;
 const RF={from:`${YEAR}-01-01`,to:TODAY<YEAR_END?iso(TODAY):`${YEAR}-12-31`};
 const CMP={sel:null,mode:"same"};
 
@@ -158,9 +158,53 @@ const debtPaid=d=>d.repayments.reduce((s,r)=>s+r.amount,0)+debtTx(d).reduce((s,x
 // tuition: payments entered by hand, and transactions linked to the student
 const stuTx=s=>S.tx.filter(x=>x.studentId===s.id&&monthIndex(x.date)>=0);
 const stuPaid=s=>s.payments.filter(p=>monthIndex(p.date)>=0).reduce((a,p)=>a+p.amount,0)+stuTx(s).reduce((a,x)=>a+x.amount,0);
-function stuRows(){return S.students.map(s=>{const due=s.fee*DUE_MONTHS,paid=stuPaid(s),bal=due-paid;return {s,due,paid,bal,late:s.fee?Math.floor(bal/s.fee+1e-9):0}})}
+const isActive=s=>s.active!==false;
+function stuRows(){return S.students.map(s=>{const act=isActive(s),due=act?s.fee*DUE_MONTHS:0,paid=stuPaid(s),bal=due-paid;return {s,act,due,paid,bal,late:act&&s.fee?Math.floor(bal/s.fee+1e-9):0}})}
 const isTuition=x=>x.amount>0&&(x.cat==="i_parents"||(x.nedarim&&x.nedarim.groupe===TUITION_GROUPE));
 const payerOf=x=>(x.nedarim&&x.nedarim.client)||"";
+// ---------- finding a bachur by name in a transaction ----------
+// Hebrew spelling varies (אהרון / אהרן), so ו and י are ignored, and punctuation too
+const nrm=s=>" "+String(s||"").replace(/["'״׳`]/g,"").replace(/[.,\-–()\/\\:]/g," ").replace(/[וי]/g,"").replace(/\s+/g," ").trim()+" ";
+const TUIT_RE=/שכר\s*לימוד|שכ["״]ל/;
+const txText=x=>[x.desc,x.note,x.nedarim&&x.nedarim.groupe,x.nedarim&&x.nedarim.client].filter(Boolean).join(" ");
+// common nicknames, as they appear on the Purim pages (מוטי יוסף = מרדכי יוסף)
+const NICK={"מרדכי":["מוטי"],"מתתיהו":["מתי"],"בן ציון":["בנצי"],"משה":["מוישי","מושי"],"אריה":["ארי","לייבי"],"אריה לייב":["ארי","לייבי"],"יעקב":["יענקי","קובי"],"יצחק":["איצי","איציק"],
+  "שמואל":["שמוליק","שמולי"],"דוד":["דוידי"],"אברהם":["אבי","אברמי"],"יוסף":["יוסי"],"ישראל":["שרולי","סרולי"],"אליהו":["אלי"],"נחום":["נחומי"],"שמחה":["שימי"],"חיים":["חיימי"],
+  "בנימין":["בני","ביני"],"אליעזר":["לייזר"],"אלעזר":["לייזר"],"שלמה":["שלומי"],"דב בער":["בערל","בערי"],"יהונתן":["יוני"],"יונתן":["יוני"],"מנחם מנדל":["מענדי"],"מנחם":["מענדי"]};
+// keys for one bachur: names given to him by hand (aliases), his name – also the short form and nicknames
+// (first word of the first name + family, as on the Purim pages), his parents with the family name (usually the payers),
+// and the family name alone
+function stuKeys(s,I){
+  const f=(s.first||"").trim(),l=(s.family||"").trim(),both=(a,b)=>[`${a} ${b}`,`${b} ${a}`],uniq=a=>[...new Set(a.map(nrm))].filter(k=>k.trim().includes(" "));
+  const short=n=>{const w=n.split(/\s+/);return [...new Set([n,w[0],...(NICK[n]||[]),...w.flatMap(x=>NICK[x]||[])])]};
+  const ali=uniq(String(s.aliases||"").split(/[,\n]/).map(x=>x.trim()).filter(Boolean));
+  if(!f||!l)return {ali,own:uniq([s.name]),par:[],fam:[]};
+  return {ali,own:uniq(short(f).flatMap(x=>both(x,l))),par:uniq([I.father,I.mother].filter(Boolean).flatMap(n=>[n,n.split(/\s+/)[0]]).flatMap(x=>both(x,l))),fam:[nrm(l)]};
+}
+function nameIndex(){
+  const keys=S.students.map(s=>({s,...stuKeys(s,(S.info||{})[s.id]||{})}));
+  // a single match counts; when several match by name and only one of them is still learning here, it's him
+  // (the family name alone must be unique)
+  const one=(t,k)=>{const T=nrm(t),m=keys.filter(x=>x[k].some(n=>T.includes(n)));if(m.length===1)return m[0].s;if(k==="fam")return null;const a=m.filter(x=>isActive(x.s));return a.length===1?a[0].s:null};
+  return {own:t=>one(t,"ali")||one(t,"own"),par:t=>one(t,"par"),fam:t=>one(t,"fam")};
+}
+// tuition: an unlinked payment that says "שכר לימוד" (or is in that category) and names the bachur or his father
+function autoLinkStudents(){
+  const ix=nameIndex(),ch=[];
+  S.tx.forEach(x=>{if(x.amount<=0||x.studentId)return;const t=txText(x);if(!isTuition(x)&&!TUIT_RE.test(t))return;
+    const s=ix.own(t)||ix.par(t)||ix.fam(t);if(!s)return;
+    if(x.cat!=="i_parents"){x.cat="i_parents";x.debtId=null}
+    ch.push(...linkStudent(x,s.id))});
+  return {ch,n:new Set(ch.filter(c=>c[0]==="tx").map(c=>c[1].id)).size};
+}
+// the Purim campaign: a donation whose Nedarim category (or description) is the bachur's name came in through him
+function viaIndex(){
+  const ix=nameIndex(),m={},pc=S.nedarimNamesCat||"i_purim";
+  S.tx.forEach(x=>{if(x.amount<=0||x.studentId||isTuition(x))return;
+    const t=x.nedarim?[x.nedarim.groupe,x.note].join(" "):x.cat===pc?[x.desc,x.note].join(" "):"";
+    if(!t||TUIT_RE.test(t))return;const s=ix.own(t);if(s)(m[s.id]=m[s.id]||[]).push(x)});
+  return m;
+}
 const buildingEntries=()=>[...S.building.entries,...S.tx.filter(x=>x.cat===BUILDING).map(x=>({id:x.id,date:x.date,desc:x.desc,amount:x.amount,src:x.source,fromTx:true}))];
 
 // ---------- earlier years (years/<year>: what was spent and received, kept automatically) ----------
@@ -442,7 +486,7 @@ function viewTransactions(){
     :(ed&&kindOf(x,items)==="expense"?`<label class="ico faint" title="צירוף קבלה (צילום או קובץ)" aria-label="צירוף קבלה"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${SVG.clip}"/></svg><input type="file" data-rcpt="${x.id}" accept="image/*,application/pdf" hidden></label>${ico("paper",`data-paper="${x.id}"`,"יש קבלה בנייר (בלי לסרוק)","faint")}`:"");
   const links=x=>{let h="";
     if(x.cat===DEBT&&x.amount<0&&S.debts.length)h+=`<select class="linksel" data-txdebt="${x.id}" aria-label="איזה חוב"${ed?"":" disabled"}><option value="">— לאיזה חוב? —</option>${S.debts.map(d=>`<option value="${d.id}"${x.debtId===d.id?" selected":""}>${esc(d.name)}</option>`).join("")}</select>`;
-    if(isTuition(x)&&S.students.length)h+=`<select class="linksel" data-txstu="${x.id}" aria-label="איזה בחור"${ed?"":" disabled"}><option value="">— של איזה בחור? —</option>${[...S.students].sort((a,b)=>a.name.localeCompare(b.name,"he")).map(s=>`<option value="${s.id}"${x.studentId===s.id?" selected":""}>${esc(s.name)}</option>`).join("")}</select>`;
+    if(isTuition(x)&&S.students.length)h+=`<select class="linksel" data-txstu="${x.id}" aria-label="איזה בחור"${ed?"":" disabled"}><option value="">— של איזה בחור? —</option>${stuSorted().map(s=>`<option value="${s.id}"${x.studentId===s.id?" selected":""}>${stuName(s)}</option>`).join("")}</select>`;
     if(x.cat===BUILDING)h+='<div class="hint" style="font-size:.75rem">נכנס לקרן הבניין</div>';
     if(x.cat===DEBT)h+='<div class="hint" style="font-size:.75rem">לא נספר בהכנסות ובהוצאות</div>';
     return h};
@@ -621,56 +665,104 @@ function viewBuilding(){
   </tbody></table></div></section>`;
 }
 
-// ---------- tuition ----------
+// ---------- tuition and the student file ----------
 const SHIURIM=[["","ללא שיעור"],["א׳","שיעור א׳"],["ב׳","שיעור ב׳"],["ג׳","שיעור ג׳"]];
+// personal details – kept in studentInfo/<id>, which only the yeshiva staff can open (not the accountant)
+const INFO_F=[["zeout","מספר זהות"],["birth","תאריך לידה","date"],["hebBirth","תאריך לידה עברי"],["phone","טלפון אישי","tel"],["phoneHome","טלפון בבית","tel"],
+  ["street","רחוב"],["city","עיר"],["father","שם האב"],["fatherPhone","נייד האב","tel"],["mother","שם האם"],["motherPhone","נייד האם","tel"],["kupah","קופת חולים"],["entered","תאריך כניסה לישיבה","date"],["remark","הערות"]];
+const DOC_KINDS=["אישור רפואי","תעודת זהות / דרכון","אישור לימודים","אחר"];
+const photoUrl={},photoWant=new Set();
+const stuName=s=>esc(s.name)+(isActive(s)?"":" (לא פעיל)");
+const stuSorted=()=>[...S.students].sort((a,b)=>(isActive(b)-isActive(a))||a.name.localeCompare(b.name,"he"));
+function loadPhoto(s,I){if(!I.photo||photoUrl[s.id]||photoWant.has(s.id))return;photoWant.add(s.id);
+  W.fileUrl(I.photo).then(u=>{photoUrl[s.id]=u;render()},()=>{})}
+function stuFile(s){
+  const I=S.info[s.id]||{},docs=I.docs||[];loadPhoto(s,I);
+  const call=(n,l)=>n?`<a class="tag call" href="tel:${esc(String(n).replace(/[^\d+]/g,""))}">📞 ${l} <span class="num" dir="ltr">${esc(n)}</span></a>`:"";
+  return `<div class="stu-file">
+    <div class="stu-photo">${photoUrl[s.id]?`<img src="${esc(photoUrl[s.id])}" alt="תמונה של ${esc(s.name)}">`:`<div class="ph" aria-hidden="true">${I.photo?"…":"👤"}</div>`}
+      <label class="btn ghost small">${I.photo?"החלפת תמונה":"הוספת תמונה"}<input type="file" accept="image/*" data-sphoto="${s.id}" hidden></label></div>
+    <div class="stu-main">
+      <div class="calls">${call(I.phone,"הבחור")}${call(I.fatherPhone,"האב")}${call(I.motherPhone,"האם")}${call(I.phoneHome,"בית")}</div>
+      <form class="form" data-sinfo="${s.id}">
+        <label for="sfFirst-${s.id}">שם פרטי<input id="sfFirst-${s.id}" value="${esc(s.first||"")}"></label>
+        <label for="sfFamily-${s.id}">שם משפחה<input id="sfFamily-${s.id}" value="${esc(s.family||"")}"></label>
+        <label for="sfAli-${s.id}" class="wide">שמות נוספים שלו בנדרים / בפורים (מופרדים בפסיק)<input id="sfAli-${s.id}" value="${esc(s.aliases||"")}" placeholder="למשל: ארי אינדיג"></label>
+        ${INFO_F.map(([k,l,ty])=>`<label for="sf${k}-${s.id}">${l}<input id="sf${k}-${s.id}"${ty?` type="${ty}"`:""}${ty==="tel"||k==="zeout"?' dir="ltr"':""} value="${esc(I[k]||"")}"></label>`).join("")}
+        <button class="btn" type="submit">שמירת הפרטים</button></form>
+      <h3>מסמכים ואישורים</h3>
+      ${docs.length?`<ul class="docs">${docs.map(d=>`<li><button class="linkbtn" data-sdoc="${s.id}:${d.id}">📄 ${esc(d.name)}</button> <span class="chip neutral">${esc(d.kind)}</span> <span class="muted num">${grDate(d.date)}</span>${ico("del",`data-delsdoc="${s.id}:${d.id}"`,"מחיקת המסמך")}</li>`).join("")}</ul>`:'<p class="muted">עדיין לא צורפו מסמכים.</p>'}
+      <div class="form docadd"><label for="sdKind-${s.id}">סוג המסמך<select id="sdKind-${s.id}">${DOC_KINDS.map(k=>`<option>${k}</option>`).join("")}</select></label>
+        <label class="btn ghost">צירוף קובץ (תמונה או PDF)<input type="file" accept="image/*,application/pdf" data-sdocadd="${s.id}" hidden></label></div>
+      ${upBusy===s.id?'<p class="hint">מעלה…</p>':""}
+    </div></div>`;
+}
+let upBusy=null;
 function viewStudents(){
-  const ed=can().edit,all=stuRows();
-  const due=all.reduce((s,r)=>s+r.due,0),paid=all.reduce((s,r)=>s+r.paid,0),behind=all.filter(r=>r.bal>0);
-  const q=SF.q.trim();
-  const list=all.filter(r=>(!q||r.s.name.includes(q))&&(SF.shiur==="all"||(r.s.shiur||"")===SF.shiur)&&(SF.f==="all"||(SF.f==="late"?r.bal>0:r.bal<=0))).sort((a,b)=>b.bal-a.bal||a.s.name.localeCompare(b.s.name,"he"));
+  const ed=can().edit,all=stuRows(),via=viaIndex(),viaSum=id=>(via[id]||[]).reduce((a,x)=>a+x.amount,0);
+  const act=all.filter(r=>r.act),due=act.reduce((s,r)=>s+r.due,0),paid=act.reduce((s,r)=>s+r.paid,0),behind=act.filter(r=>r.bal>0);
+  const q=SF.q.trim(),qn=nrm(q).trim();
+  const list=all.filter(r=>(SF.act==="all"||(SF.act==="active")===r.act)&&(!q||r.s.name.includes(q)||nrm(r.s.name).includes(qn))&&(SF.shiur==="all"||(r.s.shiur||"")===SF.shiur)&&(SF.f==="all"||(SF.f==="late"?r.bal>0:r.bal<=0)))
+    .sort((a,b)=>(b.act-a.act)||b.bal-a.bal||a.s.name.localeCompare(b.s.name,"he"));
   const unlinked=S.tx.filter(x=>isTuition(x)&&!x.studentId&&monthIndex(x.date)>=0).sort((a,b)=>a.date<b.date?1:-1);
-  const cols=ed?9:8;
-  const status=r=>r.bal<=0?`<span class="chip good">✓ משולם${r.bal<0?` (עודף <span class="num">${ils(-r.bal)}</span>)`:""}</span>`:r.late>=2?`<span class="chip bad">פיגור ${r.late} חודשים</span>`:`<span class="chip warn">חסר <span class="num">${ils(r.bal)}</span></span>`;
-  const stuOpts=sel=>`<option value="">— לבחור בחור —</option>${[...S.students].sort((a,b)=>a.name.localeCompare(b.name,"he")).map(s=>`<option value="${s.id}"${sel===s.id?" selected":""}>${esc(s.name)}</option>`).join("")}`;
+  const cols=ed?10:9,nIn=all.length-act.length,viaAll=Object.values(via).flat().reduce((a,x)=>a+x.amount,0);
+  const status=r=>!r.act?`<span class="chip neutral">לא פעיל</span>`:r.bal<=0?`<span class="chip good">✓ משולם${r.bal<0?` (עודף <span class="num">${ils(-r.bal)}</span>)`:""}</span>`:r.late>=2?`<span class="chip bad">פיגור ${r.late} חודשים</span>`:`<span class="chip warn">חסר <span class="num">${ils(r.bal)}</span></span>`;
+  const stuOpts=sel=>`<option value="">— לבחור בחור —</option>${stuSorted().map(s=>`<option value="${s.id}"${sel===s.id?" selected":""}>${stuName(s)}</option>`).join("")}`;
   const panel=r=>{const pays=[...r.s.payments.map(p=>({...p,kind:"manual"})),...stuTx(r.s).map(x=>({id:x.id,date:x.date,amount:x.amount,method:x.source,note:x.desc,kind:"tx"}))].sort((a,b)=>a.date<b.date?1:-1);
-    return `<tr class="panel"><td colspan="${cols}"><h3>תשלומים של ${esc(r.s.name)}</h3>
+    const vl=(via[r.s.id]||[]).sort((a,b)=>a.date<b.date?1:-1);
+    return `<tr class="panel"><td colspan="${cols}">
+    ${ed&&S.info?stuFile(r.s):""}
+    <h3>תשלומי שכר לימוד של ${esc(r.s.name)}</h3>
     ${(r.s.payers||[]).length?`<p class="hint" style="margin:0 0 8px">משלמים שמשויכים אוטומטית: ${r.s.payers.map(p=>`<span class="tag">${esc(p)}${ed?ico("del",`data-delpayer="${r.s.id}:${esc(p)}"`,"הסרת המשלם"):""}</span>`).join(" ")}</p>`:""}
     <table><thead><tr><th>תאריך</th><th class="n">סכום</th><th>איך שולם</th><th>פרטים</th>${ed?"<th></th>":""}</tr></thead><tbody>
     ${pays.map(p=>`<tr><td><span class="num">${grDate(p.date)}</span> <span class="muted" style="font-size:.8rem">${heDate(p.date)}</span></td><td class="n num">${ils(p.amount)}</td><td>${esc(p.method)}</td><td class="muted">${esc(p.note)}</td>${ed?`<td>${p.kind==="manual"?ico("del",`data-delsp="${r.s.id}:${p.id}"`,"מחיקת התשלום"):ico("del",`data-unlinkstu="${p.id}"`,"ניתוק מהבחור")}</td>`:""}</tr>`).join("")||`<tr><td colspan="5" class="muted">עדיין לא נרשמו תשלומים</td></tr>`}
     </tbody></table>
     ${ed?`<form class="form" data-addsp="${r.s.id}">
       <label for="spDate-${r.s.id}">תאריך<input id="spDate-${r.s.id}" type="date" value="${iso(TODAY)}" required></label>
-      <label for="spAmt-${r.s.id}">סכום<input id="spAmt-${r.s.id}" type="number" min="1" value="${r.s.fee}" required></label>
+      <label for="spAmt-${r.s.id}">סכום<input id="spAmt-${r.s.id}" type="number" min="1" value="${r.s.fee||""}" required></label>
       <label for="spMeth-${r.s.id}">איך שולם<select id="spMeth-${r.s.id}">${METHODS.map(m=>`<option>${m}</option>`).join("")}</select></label>
       <label for="spNote-${r.s.id}">הערה<input id="spNote-${r.s.id}"></label>
-      <button class="btn" type="submit">הוספת תשלום ידני</button>
-      <button class="btn danger" type="button" data-delstu="${r.s.id}">הסרת הבחור מהרשימה</button></form>
+      <button class="btn" type="submit">הוספת תשלום ידני</button></form>
       <p class="hint">תשלום שנכנס בנדרים או בבנק לא צריך להזין כאן – משייכים אותו לבחור, והוא מופיע לבד.</p>`:""}
+    <h3>תרומות פורים שהגיעו דרכו${vl.length?` · <span class="num">${ils(viaSum(r.s.id))}</span> מ־${vl.length} תורמים`:""}</h3>
+    ${vl.length?`<table><thead><tr><th>תאריך</th><th>תורם</th><th class="n">סכום</th></tr></thead><tbody>${vl.slice(0,viaShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td></tr>`).join("")}</tbody></table>
+      ${vl.length>viaShown?`<p class="more"><button class="btn ghost" data-morevia>הצגת עוד (מתוך ${vl.length})</button></p>`:""}`:'<p class="muted">לא נמצאו תרומות על שמו.</p>'}
+    ${ed?`<div class="stu-actions"><button class="btn ghost" type="button" data-sact="${r.s.id}">${r.act?"העברה ללא פעילים":"החזרה לפעילים"}</button>
+      <button class="btn danger" type="button" data-delstu="${r.s.id}">מחיקת הבחור מהמערכת</button></div>`:""}
   </td></tr>`};
   return `${ed?"":`<div class="readonly-banner">צפייה בלבד.</div>`}
-  <section class="sheet"><div class="sheet-head"><h2>שכר לימוד ${YEAR}</h2><span class="hint">התשלום ב־${DUE_DAY} לכל חודש · עד היום: ${DUE_MONTHS} חודשים</span></div>
-    <div class="summary"><div><div class="label">צריך היה להיכנס עד היום</div><div class="value num">${ils(due)}</div></div><div><div class="label">שולם</div><div class="value num">${ils(paid)}</div></div><div><div class="label">חסר · ${behind.length} בחורים</div><div class="value num" style="color:var(--bad)">${ils(behind.reduce((s,r)=>s+r.bal,0))}</div></div></div></section>
+  <section class="sheet"><div class="sheet-head"><h2>שכר לימוד ${YEAR}</h2><span class="hint">התשלום ב־${DUE_DAY} לכל חודש · עד היום: ${DUE_MONTHS} חודשים · ${act.length} בחורים פעילים</span></div>
+    <div class="summary"><div><div class="label">צריך היה להיכנס עד היום</div><div class="value num">${ils(due)}</div></div><div><div class="label">שולם</div><div class="value num">${ils(paid)}</div></div><div><div class="label">חסר · ${behind.length} בחורים</div><div class="value num" style="color:var(--bad)">${ils(behind.reduce((s,r)=>s+r.bal,0))}</div></div>
+    <div><div class="label">פורים – דרך הבחורים</div><div class="value num">${ils(viaAll)}</div></div></div></section>
   ${unlinked.length?`<section class="sheet"><div class="sheet-head"><h2>תשלומי שכר לימוד שעוד לא שויכו</h2><span class="chip warn">${unlinked.length}</span>
-      <button class="linkbtn" data-togunlinked>${showUnlinked?"הסתרה":"הצגה"}</button></div>
+      <button class="linkbtn" data-togunlinked>${showUnlinked?"הסתרה":"הצגה"}</button>${ed&&S.students.length?`<button class="btn ghost small" data-autolink>שיוך אוטומטי לפי שמות</button>`:""}</div>
     ${showUnlinked?(S.students.length?`<p class="hint" style="margin-top:0">בוחרים לכל תשלום של איזה בחור הוא. המערכת זוכרת את המשלם, ומשייכת לבד גם את שאר התשלומים שלו – עכשיו ובעתיד.</p>
     <div class="tbl-wrap"><table><thead><tr><th>תאריך</th><th>משלם</th><th class="n">סכום</th><th>של איזה בחור</th></tr></thead><tbody>
     ${unlinked.slice(0,unlinkedShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td><td>${ed?`<select data-linkstu="${x.id}" aria-label="של איזה בחור">${stuOpts("")}</select>`:""}</td></tr>`).join("")}
     </tbody></table></div>${unlinked.length>unlinkedShown?`<p class="more"><button class="btn ghost" data-moreunlinked>הצגת עוד ${Math.min(60,unlinked.length-unlinkedShown)} (מתוך ${unlinked.length})</button></p>`:""}`:'<p class="muted">קודם מוסיפים את הבחורים למטה, ואז משייכים כאן את התשלומים.</p>'):""}</section>`:""}
   <section class="sheet">
   ${ed?`<details class="addbox inner" data-open="stu"${openAdd.has("stu")?" open":""}><summary><span class="plus">+</span> הוספת בחור</summary><form class="form" id="stuForm">
-    <label for="sName">שם הבחור<input id="sName" required></label>
+    <label for="sFirst">שם פרטי<input id="sFirst" required></label>
+    <label for="sFamily">שם משפחה<input id="sFamily" required></label>
     <label for="sShiur">שיעור<select id="sShiur">${SHIURIM.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select></label>
     <label for="sFee">תשלום חודשי<input id="sFee" type="number" min="0" value="800" required></label>
-    <button class="btn" type="submit">הוספת בחור</button></form></details>`:""}
+    <button class="btn" type="submit">הוספת בחור</button></form></details>
+    <details class="addbox inner" data-open="simp"${openAdd.has("simp")?" open":""}><summary><span class="plus">⇪</span> ייבוא רשימת תלמידים מאקסל</summary>
+    <p class="hint">גיליון שהשם שלו כולל "לשעבר" נכנס כלא פעילים. בחור שכבר קיים (לפי תעודת זהות או שם) מתעדכן ולא נכפל. התמונות והמסמכים שלו נשארים.</p>
+    <div class="form"><label for="impFee">תשלום חודשי לבחורים פעילים חדשים<input id="impFee" type="number" min="0" value="0"></label>
+      <label class="btn">בחירת קובץ אקסל<input type="file" accept=".xlsx" data-simport hidden></label></div>
+    <p class="hint">תשלומים שנכנסו לפני שהבחור נוסף: <button class="linkbtn" data-autolink>שיוך אוטומטי לפי שמות</button></p></details>`:""}
   <div class="filters"><input type="search" id="sq" placeholder="חיפוש לפי שם" value="${esc(SF.q)}" aria-label="חיפוש בחור">
     <select id="sfShiur" aria-label="שיעור"><option value="all">כל השיעורים</option>${SHIURIM.map(([v,l])=>`<option value="${v}"${SF.shiur===v?" selected":""}>${l}</option>`).join("")}</select>
-    ${[["all","כולם"],["late","חייבים"],["ok","משולם"]].map(([k,l])=>`<button data-sf="${k}" aria-pressed="${SF.f===k}">${l}</button>`).join("")}</div>
-  <div class="tbl-wrap"><table><thead><tr><th></th><th>שם</th><th>שיעור</th><th class="n">חודשי</th><th class="n">צריך עד היום</th><th class="n">שולם</th><th class="n">יתרה</th><th>מצב</th>${ed?"<th></th>":""}</tr></thead><tbody>
-  ${list.map(r=>{const open=openStu.has(r.s.id);return `<tr><td><button class="tog" data-togs="${r.s.id}" aria-expanded="${open}" aria-label="הצגת תשלומים"><span>◀</span></button></td>
-    <td><div class="namerow">${esc(r.s.name)}${noteBtn("stu",r.s.id,r.s.note)}</div>${noteUI("stu",r.s.id,r.s.note)}</td>
+    ${[["active",`פעילים · ${act.length}`],["inactive",`לא פעילים · ${nIn}`],["all","כולם"]].map(([k,l])=>`<button data-sact-f="${k}" aria-pressed="${SF.act===k}">${l}</button>`).join("")}
+    <span class="sep" aria-hidden="true"></span>
+    ${[["all","כל המצבים"],["late","חייבים"],["ok","משולם"]].map(([k,l])=>`<button data-sf="${k}" aria-pressed="${SF.f===k}">${l}</button>`).join("")}</div>
+  <div class="tbl-wrap"><table><thead><tr><th></th><th>שם</th><th>שיעור</th><th class="n">חודשי</th><th class="n">צריך עד היום</th><th class="n">שולם</th><th class="n">יתרה</th><th>מצב</th><th class="n">פורים דרכו</th>${ed?"<th></th>":""}</tr></thead><tbody>
+  ${list.map(r=>{const open=openStu.has(r.s.id),I=(S.info||{})[r.s.id]||{},vs=viaSum(r.s.id);return `<tr${r.act?"":' class="inactive"'}><td><button class="tog" data-togs="${r.s.id}" aria-expanded="${open}" aria-label="פתיחת הכרטיס של ${esc(r.s.name)}"><span>◀</span></button></td>
+    <td><div class="namerow">${esc(r.s.name)}${(I.docs||[]).some(d=>d.kind==="אישור רפואי")?' <span title="יש אישור רפואי" aria-label="יש אישור רפואי">🩺</span>':""}${noteBtn("stu",r.s.id,r.s.note)}</div>${I.city?`<div class="muted" style="font-size:.8rem">${esc(I.city)}</div>`:""}${noteUI("stu",r.s.id,r.s.note)}</td>
     <td>${ed?`<select data-sshiur="${r.s.id}" aria-label="שיעור">${SHIURIM.map(([v,l])=>`<option value="${v}"${(r.s.shiur||"")===v?" selected":""}>${l}</option>`).join("")}</select>`:esc(r.s.shiur||"—")}</td>
     <td class="n">${ed?`<input class="small num" data-sfee="${r.s.id}" type="number" min="0" value="${r.s.fee}" aria-label="תשלום חודשי ${esc(r.s.name)}">`:`<span class="num">${ils(r.s.fee)}</span>`}</td>
-    <td class="n num">${ils(r.due)}</td><td class="n num">${ils(r.paid)}</td><td class="n num">${ils(r.bal)}</td><td>${status(r)}</td>${ed?"<td></td>":""}</tr>${open?panel(r):""}`}).join("")||`<tr><td colspan="${cols}" class="muted">${S.students.length?"לא נמצאו בחורים":"עדיין לא הוגדרו בחורים"}</td></tr>`}
+    <td class="n num">${r.act?ils(r.due):"—"}</td><td class="n num">${ils(r.paid)}</td><td class="n num">${r.act?ils(r.bal):"—"}</td><td>${status(r)}</td><td class="n num">${vs?ils(vs):""}</td>${ed?"<td></td>":""}</tr>${open?panel(r):""}`}).join("")||`<tr><td colspan="${cols}" class="muted">${S.students.length?"לא נמצאו בחורים":"עדיין לא הוגדרו בחורים"}</td></tr>`}
   </tbody></table></div></section>`;
 }
 
@@ -853,7 +945,8 @@ function viewSettings(){
       <label for="uName">שם<input id="uName" required></label>
       <label for="uEmail">כתובת מייל<input id="uEmail" type="email" required dir="ltr"></label>
       <label for="uRole">תפקיד<select id="uRole">${Object.entries(ROLE_NAMES).map(([k,l])=>`<option value="${k}">${l}</option>`).join("")}</select></label>
-      <button class="btn" type="submit">הוספת משתמש</button></form>`:""}
+      <button class="btn" type="submit">הוספת משתמש</button></form>
+      <p class="hint">ההוספה כאן רק נותנת הרשאה ולא שולחת מייל. אחרי ההוספה, המשתמש נכנס לאתר, לוחץ על "כניסה ראשונה? הרשמה" ונרשם עם אותה כתובת. רק אז נשלח אליו מייל אימות.</p>`:""}
     <div class="tbl-wrap"><table><thead><tr><th>שם</th><th>מייל</th><th>תפקיד</th>${ed?"<th></th>":""}</tr></thead><tbody>
     <tr><td>חשבון הישיבה</td><td dir="ltr" style="text-align:right">${esc(BRAND.owner)}</td><td>מנהל ראשי (קבוע)</td>${ed?"<td></td>":""}</tr>
     ${S.users.map(u=>`<tr><td>${esc(u.name)}</td><td dir="ltr" style="text-align:right">${esc(u.id)}</td><td>${ed&&u.id!==me.email?`<select data-urole="${esc(u.id)}" aria-label="תפקיד">${Object.entries(ROLE_NAMES).map(([k,l])=>`<option value="${k}"${u.role===k?" selected":""}>${l}</option>`).join("")}</select>`:esc(ROLE_NAMES[u.role]||u.role)}</td>
@@ -974,6 +1067,57 @@ addEventListener("keydown",e=>{if(e.key==="Escape"&&!rec)document.getElementById
 function readReceipt(file){return new Promise((res,rej)=>{const r=new FileReader();r.onerror=rej;r.onload=()=>{
   if(!file.type.startsWith("image/"))return file.size>700000?rej("big"):res({name:file.name,type:file.type,data:r.result});
   const img=new Image();img.onerror=rej;img.onload=()=>{const k=Math.min(1,1400/Math.max(img.width,img.height)),c=document.createElement("canvas");c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);c.getContext("2d").drawImage(img,0,0,c.width,c.height);res({name:file.name,type:"image/jpeg",data:c.toDataURL("image/jpeg",.7)})};img.src=r.result};r.readAsDataURL(file)})}
+// a photo for the student file: shrunk on the device, so storage stays tiny (≈100KB a photo)
+function shrink(file,max,q){return new Promise((res,rej)=>{const u=URL.createObjectURL(file),img=new Image();img.onerror=()=>{URL.revokeObjectURL(u);rej("img")};
+  img.onload=()=>{URL.revokeObjectURL(u);const k=Math.min(1,max/Math.max(img.width,img.height)),c=document.createElement("canvas");c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);
+    c.getContext("2d").drawImage(img,0,0,c.width,c.height);c.toBlob(b=>b?res(b):rej("blob"),"image/jpeg",q)};img.src=u})}
+
+// ---------- importing the student list from Excel ----------
+// columns are found by their title, so their order doesn't matter; sheets without these titles are skipped
+const IMP_COLS={family:["משפחה"],first:["פרטי","שם פרטי"],zeout:["מס' זהות","ת.ז.","תעודת זהות","מספר זהות"],birth:["ת. לידה","תאריך לידה"],hebBirth:["ת. עברי","תאריך עברי"],
+  phoneHome:["טל' בית","טלפון בית"],phone:["טל' אישי","נייד","טלפון אישי"],street:["רחוב","כתובת"],city:["עיר"],father:["אב","שם האב"],fatherPhone:["נייד אב"],mother:["אם","שם האם"],motherPhone:["נייד אם"],
+  kupah:['קופ"ח',"קופת חולים"],entered:["תאריך כניסה"],remark:["עמודה1","הערות"]};
+const cellStr=c=>c==null?"":c instanceof Date?`${c.getUTCFullYear()}-${String(c.getUTCMonth()+1).padStart(2,"0")}-${String(c.getUTCDate()).padStart(2,"0")}`:String(c).trim();
+async function readStudents(file){
+  const {default:readXlsxFile}=await import("read-excel-file/browser"),sheets=await readXlsxFile(file),out=new Map();
+  for(const sh of sheets){const rows=sh.data,hi=rows.findIndex(r=>r.some(c=>cellStr(c)==="משפחה"));if(hi<0)continue;
+    const head=rows[hi].map(cellStr),col={};Object.entries(IMP_COLS).forEach(([k,names])=>{const i=head.findIndex(h=>names.includes(h));if(i>=0)col[k]=i});
+    if(col.family==null||col.first==null||col.zeout==null)continue; // lists without ID numbers (trips, birthdays…) are only copies
+    const active=!sh.sheet.includes("לשעבר");
+    rows.slice(hi+1).forEach(r=>{const o={};Object.entries(col).forEach(([k,i])=>o[k]=cellStr(r[i]));if(!o.family&&!o.first)return;
+      if(o.zeout&&/^\d{5,8}$/.test(o.zeout))o.zeout=o.zeout.padStart(9,"0");
+      const key=o.zeout||nrm(o.first+" "+o.family);const was=out.get(key);
+      if(!was||active&&!was.active)out.set(key,{...o,active,sheet:sh.sheet})})}
+  return [...out.values()];
+}
+let impPlan=null;
+function previewImport(rows){
+  const byZ={},byN={};S.students.forEach(s=>{const z=(S.info[s.id]||{}).zeout;if(z)byZ[z]=s;byN[nrm(s.name)]=s});
+  impPlan=rows.map(o=>({o,s:(o.zeout&&byZ[o.zeout])||byN[nrm(o.first+" "+o.family)]||null}));
+  const n=impPlan.filter(p=>!p.s),sheets=[...new Set(rows.map(o=>o.sheet))];
+  if(!rows.length){alert("לא נמצאו בקובץ תלמידים. צריך גיליון עם עמודות משפחה ופרטי.");return}
+  showViewer(`<h2>ייבוא תלמידים</h2>
+    <p>נמצאו <b>${rows.length}</b> תלמידים בגיליונות: ${sheets.map(esc).join(", ")}.</p>
+    <ul><li>פעילים: <b>${rows.filter(o=>o.active).length}</b></li><li>לא פעילים (תלמידים לשעבר): <b>${rows.filter(o=>!o.active).length}</b></li>
+    <li>חדשים במערכת: <b>${n.length}</b> · כבר קיימים ויתעדכנו: <b>${impPlan.length-n.length}</b></li></ul>
+    <p class="hint">אחרי הייבוא המערכת תשייך לבד תשלומי שכר לימוד שכתוב בהם שם הבחור (או שם האב), ותציג לכל בחור את תרומות הפורים שהגיעו דרכו.</p>
+    <p><button class="btn" data-impok>ייבוא</button></p>`);
+}
+// the viewer is outside #app, so its button is caught here
+document.getElementById("viewer").addEventListener("click",e=>{if(e.target.closest("[data-impok]"))applyImport()});
+function applyImport(){
+  if(!impPlan)return;const fee=+(document.getElementById("impFee")||{}).value||0,ch=[];let added=0,updated=0;
+  impPlan.forEach(({o,s})=>{const {first,family,active,sheet,...info}=o;
+    if(!s){s={id:uid(),fee:active?fee:0,shiur:"",note:"",payments:[],payers:[]};S.students.push(s);added++}else updated++;
+    Object.assign(s,{first,family,name:`${first} ${family}`.trim(),active});
+    const I=S.info[s.id]||{};Object.entries(info).forEach(([k,v])=>{if(v)I[k]=v});S.info[s.id]=I;
+    ch.push(["students",s],["studentInfo",{id:s.id,...I}])});
+  impPlan=null;document.getElementById("viewer").hidden=true;
+  const r=autoLinkStudents();
+  commit(`תלמידים: יובאו מאקסל ${added} חדשים, ${updated} עודכנו${r.n?`; שויכו לפי שם ${r.n} תשלומי שכר לימוד`:""}`,...ch,...r.ch);
+  SF.act="all";render();
+  setTimeout(()=>alert(`הייבוא הסתיים: ${added} חדשים, ${updated} עודכנו.${r.n?`\nשויכו לפי שם ${r.n} תשלומי שכר לימוד.`:""}`),50);
+}
 // classification: the yeshiva's rules, then donations named after a bachur / rav (the Purim campaign)
 function classify(x){
   const r=S.rules.find(r=>r.kw&&(x.desc||"").includes(r.kw));if(r)return r.cat;
@@ -1048,7 +1192,20 @@ app.addEventListener("click",e=>{
   else if(d.delsp){const[sid,pid]=d.delsp.split(":"),s=S.students.find(x=>x.id===sid),p=s.payments.find(p=>p.id===pid);if(!confirm("למחוק את התשלום?"))return;s.payments=s.payments.filter(p=>p.id!==pid);commit(`שכר לימוד: נמחק תשלום של ${ils(p.amount)} של ${s.name}`,["students",s])}
   else if(d.unlinkstu){const x=S.tx.find(x=>x.id===d.unlinkstu);x.studentId=null;commit(`שכר לימוד: התשלום "${x.desc}" נותק מהבחור`,["tx",x])}
   else if(d.delpayer){const i=d.delpayer.indexOf(":"),s=S.students.find(x=>x.id===d.delpayer.slice(0,i)),p=d.delpayer.slice(i+1);s.payers=(s.payers||[]).filter(x=>x!==p);commit(`שכר לימוד: ${p} כבר לא משויך אוטומטית ל${s.name}`,["students",s])}
-  else if(d.delstu){if(!confirm("להסיר את הבחור מהרשימה?"))return;const s=S.students.find(x=>x.id===d.delstu);S.students=S.students.filter(x=>x.id!==d.delstu);const ch=S.tx.filter(x=>x.studentId===s.id).map(x=>{x.studentId=null;return ["tx",x]});commit(`שכר לימוד: ${s.name} הוסר מהרשימה`,["students",s.id,"del"],...ch)}
+  else if(d.delstu){const s=S.students.find(x=>x.id===d.delstu);if(!confirm(`למחוק את ${s.name} מהמערכת, כולל הפרטים והמסמכים שלו?
+בחור שעזב – עדיף "העברה ללא פעילים".`))return;
+    S.students=S.students.filter(x=>x.id!==s.id);const ch=S.tx.filter(x=>x.studentId===s.id).map(x=>{x.studentId=null;return ["tx",x]});
+    const I=S.info&&S.info[s.id];if(I){[I.photo,...(I.docs||[]).map(x=>x.path)].filter(Boolean).forEach(p=>W.delFile(p));delete S.info[s.id];ch.push(["studentInfo",s.id,"del"])}
+    commit(`שכר לימוד: ${s.name} נמחק מהמערכת`,["students",s.id,"del"],...ch)}
+  else if(d.sactF){SF.act=d.sactF;render()}
+  else if(d.sact){const s=S.students.find(x=>x.id===d.sact);s.active=!isActive(s);commit(`שכר לימוד: ${s.name} – ${s.active?"חזר לפעילים":"הועבר ללא פעילים"}`,["students",s])}
+  else if(t.hasAttribute("data-morevia")){viaShown+=50;render()}
+  else if(t.hasAttribute("data-autolink")){const r=autoLinkStudents();if(!r.n){alert("לא נמצאו תשלומים חדשים שאפשר לשייך לפי שם.");return}
+    commit(`שכר לימוד: שויכו אוטומטית לפי שמות ${r.n} תשלומים`,...r.ch);alert(`שויכו ${r.n} תשלומים.`)}
+  else if(d.sdoc){const[sid,id]=d.sdoc.split(":"),x=(S.info[sid].docs||[]).find(x=>x.id===id),w=open("","_blank");
+    W.fileUrl(x.path).then(u=>{if(w)w.location=u;else location.href=u},()=>{if(w)w.close();alert("לא הצלחתי לפתוח את הקובץ.")})}
+  else if(d.delsdoc){const[sid,id]=d.delsdoc.split(":"),I=S.info[sid],x=I.docs.find(x=>x.id===id),s=S.students.find(y=>y.id===sid);if(!confirm(`למחוק את "${x.name}"?`))return;
+    I.docs=I.docs.filter(y=>y.id!==id);W.delFile(x.path);commit(`תלמידים: נמחק המסמך "${x.name}" של ${s.name}`,["studentInfo",{id:sid,...I}])}
   else if(d.handled){const dn=S.donors.find(x=>x.id===d.handled);dn.handled=true;commit(`תורמים: ${dn.name} – סומן שטופל`,["donors",dn])}
   else if(d.bulkdonor){if(d.bulkdonor==="none"){selDonors.clear();render();return}const ds=S.donors.filter(x=>selDonors.has(x.id));ds.forEach(x=>x.handled=true);selDonors.clear();commit(`תורמים: ${ds.length} סומנו שטופלו`,...ds.map(x=>["donors",x]))}
   else if(d.rep){if(d.rep==="print")print();else if(d.rep==="tx")exportTx();else exportSummary()}
@@ -1087,6 +1244,15 @@ app.addEventListener("change",e=>{
   else if(d.sfee){const s=S.students.find(x=>x.id===d.sfee),old=s.fee;s.fee=+t.value||0;commit(`שכר לימוד: ${s.name} – תשלום חודשי ${ils(old)} ← ${ils(s.fee)}`,["students",s])}
   else if(d.sshiur){const s=S.students.find(x=>x.id===d.sshiur);s.shiur=t.value;commit(`שכר לימוד: ${s.name} – ${t.value?"שיעור "+t.value:"ללא שיעור"}`,["students",s])}
   else if(d.urole){const u=S.users.find(x=>x.id===d.urole);u.role=t.value;commit(`משתמשים: ${u.name} – תפקיד ${ROLE_NAMES[u.role]}`,["roles",u])}
+  else if(d.sphoto&&t.files[0]){const s=S.students.find(x=>x.id===d.sphoto),I=S.info[s.id]||{},path=`students/${s.id}/photo-${Date.now()}.jpg`,old=I.photo;upBusy=s.id;render();
+    shrink(t.files[0],700,.82).then(b=>W.upload(path,b)).then(()=>{I.photo=path;S.info[s.id]=I;delete photoUrl[s.id];photoWant.delete(s.id);if(old)W.delFile(old);commit(`תלמידים: עודכנה התמונה של ${s.name}`,["studentInfo",{id:s.id,...I}])})
+      .catch(()=>alert("לא הצלחתי להעלות את התמונה.")).finally(()=>{upBusy=null;render()})}
+  else if(d.sdocadd&&t.files[0]){const f=t.files[0],s=S.students.find(x=>x.id===d.sdocadd),I=S.info[s.id]||{},kind=document.getElementById("sdKind-"+s.id).value;
+    if(!f.type.startsWith("image/")&&f.size>15*1024*1024){alert("הקובץ גדול מדי (עד 15MB).");return}
+    const id=uid(),path=`students/${s.id}/${id}-${f.name.replace(/[\/\\#?]/g,"_")}`;upBusy=s.id;render();
+    (f.type.startsWith("image/")?shrink(f,1800,.8):Promise.resolve(f)).then(b=>W.upload(path,b)).then(()=>{I.docs=[...(I.docs||[]),{id,name:f.name,kind,path,type:f.type,date:iso(TODAY)}];S.info[s.id]=I;
+      commit(`תלמידים: צורף "${kind}" ל${s.name}`,["studentInfo",{id:s.id,...I}])}).catch(()=>alert("לא הצלחתי להעלות את הקובץ.")).finally(()=>{upBusy=null;render()})}
+  else if(t.hasAttribute("data-simport")&&t.files[0]){readStudents(t.files[0]).then(previewImport,e=>{console.error(e);alert("לא הצלחתי לקרוא את הקובץ. צריך קובץ אקסל (xlsx) עם עמודות משפחה, פרטי ומס' זהות.")})}
   else if(d.rcpt&&t.files[0]){const x=S.tx.find(x=>x.id===d.rcpt);readReceipt(t.files[0])
     .then(rc=>W.putReceipt(x.id,rc).then(()=>{x.rcpt={name:rc.name,type:rc.type};commit(`תנועות: צורפה קבלה ל"${x.desc}"`,["tx",x])}))
     .catch(()=>alert("לא הצלחתי לצרף את הקובץ. אפשר לצרף תמונה, או PDF קטן מ־700KB."))}
@@ -1119,7 +1285,10 @@ app.addEventListener("submit",e=>{
     const nd=new Date(db.next+"T12:00:00");nd.setMonth(nd.getMonth()+1);db.next=iso(nd);ch=[["debts",db]];msg=`חובות: נרשם החזר של ${ils(+v("rpAmt-"+id))} ל"${db.name}"`}
   else if(f.id==="bForm"){const a=+v("bAmt"),b={id:uid(),date:v("bDate"),desc:v("bDesc"),amount:v("bKind")==="in"?a:-a,note:""};S.building.entries.push(b);ch=[["building",b]];msg=`קרן הבניין: נוסף "${b.desc}" – ${ils(a)}`}
   else if(f.id==="ruleForm"){S.rules.push({kw:v("rKw"),cat:v("rCat")});ch=["meta"];msg=`כללי סיווג: נוסף הכלל "${v("rKw")}"`}
-  else if(f.id==="stuForm"){const s={id:uid(),name:v("sName").trim(),shiur:v("sShiur"),fee:+v("sFee"),note:"",payments:[],payers:[]};S.students.push(s);ch=[["students",s]];msg=`שכר לימוד: נוסף הבחור ${s.name}`}
+  else if(f.dataset.sinfo){const id=f.dataset.sinfo,s=S.students.find(x=>x.id===id),I=S.info[id]||{};
+    s.first=v("sfFirst-"+id).trim();s.family=v("sfFamily-"+id).trim();s.name=`${s.first} ${s.family}`.trim()||s.name;s.aliases=v("sfAli-"+id).trim();
+    INFO_F.forEach(([k])=>{I[k]=v(`sf${k}-${id}`).trim()});S.info[id]=I;ch=[["students",s],["studentInfo",{id,...I}]];msg=`תלמידים: עודכנו הפרטים של ${s.name}`}
+  else if(f.id==="stuForm"){const first=v("sFirst").trim(),family=v("sFamily").trim(),s={id:uid(),name:`${first} ${family}`,first,family,active:true,shiur:v("sShiur"),fee:+v("sFee"),note:"",payments:[],payers:[]};S.students.push(s);ch=[["students",s]];msg=`שכר לימוד: נוסף הבחור ${s.name}`}
   else if(f.dataset.addsp){const id=f.dataset.addsp,s=S.students.find(x=>x.id===id);s.payments.push({id:uid(),date:v("spDate-"+id),amount:+v("spAmt-"+id),method:v("spMeth-"+id),note:v("spNote-"+id).trim()});ch=[["students",s]];msg=`שכר לימוד: נרשם תשלום של ${ils(+v("spAmt-"+id))} מ${s.name}`}
   else if(f.id==="userForm"){const email=v("uEmail").trim().toLowerCase();if(email===OWNER||S.users.some(u=>u.id===email)){alert("המשתמש הזה כבר קיים.");return}
     const u={id:email,name:v("uName").trim(),role:v("uRole")};S.users.push(u);ch=[["roles",u]];msg=`משתמשים: נוסף ${u.name} (${email}) – ${ROLE_NAMES[u.role]}`}

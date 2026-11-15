@@ -28,6 +28,10 @@ service cloud.firestore {
       allow read: if reader();
       allow create: if reader() && request.resource.data.email == email();
     }
+    // the students' personal details (ID, address, phones, documents): staff only – not the accountant
+    match /studentInfo/{id} {
+      allow read, write: if editor();
+    }
     // written only by the Nedarim sync on the server
     match /sync/{id} {
       allow read: if reader();

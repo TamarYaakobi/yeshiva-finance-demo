@@ -50,17 +50,26 @@ meta.meorot={rent:14000,fixed:{elec:4800,water:4200},bills:{}};
 meta.buildingGoal=1500000;
 
 const S={...meta,meorot:{...meta.meorot,entries:[]},building:{goal:meta.buildingGoal,entries:[]},
-  tx:[],debts:[],students:[],donors:[],log:[],logMore:false,users:[],sync:null,years:{},questions:[]};
+  tx:[],debts:[],students:[],donors:[],log:[],logMore:false,users:[],sync:null,years:{},questions:[],info:{}};
 const tx=(m,d,desc,amount,cat,extra)=>{if(past(m,d))S.tx.push({id:uid(),date:D(YEAR,m,d),desc,amount,source:"בנק לדוגמה",cat,note:"",...extra})};
 const ned=(m,d,who,grp,amount,cat,extra)=>{if(past(m,d))S.tx.push({id:"n_"+uid(),date:D(YEAR,m,d),desc:`נדרים פלוס – ${who}${grp?" · "+grp:""}`,amount,source:"נדרים פלוס",cat,note:"",nedarim:{type:"credit",groupe:grp,client:who},...extra})};
 
 // ---------- students and their tuition ----------
 const SH=["א׳","ב׳","ג׳"];
-for(let i=0;i<52;i++){const name=`${pick(FIRST)} ${pick(LAST)}`,fee=pick([700,800,800,900,1000,1200]),shiur=i<49?SH[i%3]:"";
-  const s={id:"st"+i,name,shiur,fee,note:"",payments:[],payers:[]};S.students.push(s);
-  const payer=`${name.split(" ")[1]} ${pick(FIRST)}`;s.payers.push(payer);
+const KUPA=["כללית","מכבי","מאוחדת","לאומית"],MOTHER=["שרה","רבקה","רחל","לאה","חנה","מרים","אסתר","דבורה","חיה","יהודית"],STREET=["הרב קוק","רבי עקיבא","השלום","הנביאים","חזון איש","האדמו״ר"];
+const phone=()=>`05${pick([0,2,3,4,8])}-${String(1000000+Math.floor(rnd()*8999999)).slice(0,7)}`;
+for(let i=0;i<60;i++){const first=pick(FIRST),family=pick(LAST),name=`${first} ${family}`,fee=pick([700,800,800,900,1000,1200]),shiur=i<49?SH[i%3]:"";
+  // the last 8 left during the year: inactive, with the payments they made before leaving
+  const active=i<52,left=active?CUR:Math.floor(rnd()*Math.max(1,CUR));
+  const s={id:"st"+i,name,first,family,active,shiur,fee:active?fee:0,note:"",payments:[],payers:[]};S.students.push(s);
+  const father=pick(FIRST),payer=`${family} ${father}`;s.payers.push(payer);
+  const by=1997+Math.floor(rnd()*9),bm=1+Math.floor(rnd()*12),bd=1+Math.floor(rnd()*28);
+  // invented details (the ID number is a made-up placeholder, not a real one)
+  S.info[s.id]={zeout:"0000"+String(10000+i*137).slice(-5),birth:`${by}-${String(bm).padStart(2,"0")}-${String(bd).padStart(2,"0")}`,phone:phone(),phoneHome:rnd()<.5?`02-${String(5000000+Math.floor(rnd()*999999))}`:"",
+    street:`${pick(STREET)} ${1+Math.floor(rnd()*40)}`,city:pick(CITY),father,fatherPhone:phone(),mother:pick(MOTHER),motherPhone:phone(),kupah:pick(KUPA),entered:`${YEAR-1-Math.floor(rnd()*3)}-0${1+Math.floor(rnd()*8)}-01`,docs:[]};
+  if(rnd()<.6)S.info[s.id].docs.push({id:"d"+i,name:"אישור רפואי.pdf",kind:"אישור רפואי",path:"",type:"application/pdf",date:D(YEAR,0,5)});
   const late=i%7===3?2:i%11===5?1:0; // a few families behind
-  for(let m=0;m<=CUR-late;m++)ned(m,14,payer,"שכר לימוד",fee,"i_parents",{studentId:s.id});
+  for(let m=0;m<=(active?CUR-late:left);m++)ned(m,14,payer,"שכר לימוד",fee,"i_parents",{studentId:s.id});
 }
 
 // ---------- monthly activity ----------
@@ -82,7 +91,7 @@ for(let m=0;m<=CUR;m++){
 // one-off expenses
 [[1,12,"ציוד למטבח",-4200,"m_equip"],[2,20,"סעודת פורים",-11600,"x_purim"],[3,25,"בין הזמנים – מענקים",-8600,"x_bein"],[3,2,"מענק פסח לאברכים",-4000,"k_pesach"],[5,15,"טיול שנתי",-23400,"x_trip"],[6,9,"סיום מסכת",-3300,"x_siyum"],[8,28,"מענק סוכות לאברכים",-4000,"k_sukkot"],[9,6,"מלגות לבחורים",-9000,"x_milga"],[1,3,"רישום עמותה",-1700,"o_reg"]].forEach(a=>tx(...a));
 // the Purim campaign: a couple of hundred donations in a few days
-for(let k=0;k<430;k++)ned(2,10+Math.floor(rnd()*6),person(),pick(["הבחור "+pick(FIRST),"הרב "+pick(LAST),"קמפיין פורים"]),pick([36,52,100,100,180,180,250,360,500,770,1000,1800,2600]),"i_purim");
+for(let k=0;k<430;k++)ned(2,10+Math.floor(rnd()*6),person(),pick([`הבה"ח ${pick(S.students).name} נ"י`,`הבה"ח ${pick(S.students).name} נ"י`,"הרב "+pick(LAST),"קמפיין פורים"]),pick([36,52,100,100,180,180,250,360,500,770,1000,1800,2600]),"i_purim");
 // a few transactions still waiting to be classified
 [[CUR,2,"העברה מ- י. שטרן",1500],[CUR,3,"הפקדת מזומן",2400],[CUR>0?CUR-1:0,22,"הוראת קבע – ח. פרידמן",-650]].forEach(([m,d,desc,a])=>tx(m,Math.min(d,DAY),desc,a,""));
 
@@ -118,7 +127,7 @@ for(let k=0;k<14;k++)S.log.push({ts:new Date(Date.now()-k*5.3*3600000).toISOStri
 S.tx.sort((a,b)=>b.date.localeCompare(a.date));
 
 // ---------- the write layer: changes stay in memory ----------
-const receipts={};
+const receipts={},files={};
 const W={
   meta(){},put(){},del(){},
   log(msg){S.log.unshift({ts:new Date().toISOString(),email:me.email,name:me.name,msg})},
@@ -127,6 +136,10 @@ const W={
   delReceipt:id=>{delete receipts[id];return Promise.resolve()},
   syncNow:()=>new Promise(r=>setTimeout(()=>{S.sync={...S.sync,lastRun:new Date().toISOString()};r({newTx:0})},1200)),
   moreLog(){},
+  // the student file: photos and documents stay in this browser tab
+  upload:(path,blob)=>{files[path]=URL.createObjectURL(blob);return Promise.resolve()},
+  fileUrl:path=>Promise.resolve(files[path]||URL.createObjectURL(new Blob(['<meta charset="utf-8"><body dir="rtl" style="font-family:sans-serif;padding:40px"><h2>מסמך לדוגמה</h2><p>בגרסת ההדגמה אין קבצים אמיתיים. אפשר לצרף קובץ משלך – הוא נשאר רק בדפדפן.</p>'],{type:"text/html"}))),
+  delFile:path=>{delete files[path];return Promise.resolve()},
   loadRange:async(from,to)=>({tx:S.tx.filter(x=>x.date>=from&&x.date<=to),meo:S.meorot.entries.filter(x=>x.date>=from&&x.date<=to)}),
   sendQuestion:async()=>{alert("זו גרסת הדגמה – השאלה לא נשלחה. במערכת האמיתית היא נשלחת במייל למתכנת, עם צילומי המסך וההקלטה.")}
 };

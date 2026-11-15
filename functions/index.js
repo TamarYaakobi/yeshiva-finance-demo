@@ -42,6 +42,23 @@ function classifier(meta,knownGroups){
     const g=t.nedarim&&t.nedarim.groupe;return g&&knownGroups.size&&!knownGroups.has(g)&&namesCat?namesCat:""};
 }
 
+// finding a bachur by name – Hebrew spelling varies (אהרון / אהרן), so ו and י and punctuation are ignored
+const nrm=s=>" "+String(s||"").replace(/["'״׳`]/g,"").replace(/[.,\-–()\/\\:]/g," ").replace(/[וי]/g,"").replace(/\s+/g," ").trim()+" ";
+const TUIT_RE=/שכר\s*לימוד|שכ["״]ל/;
+// common nicknames, as they appear on the Purim pages (מוטי יוסף = מרדכי יוסף)
+const NICK={"מרדכי":["מוטי"],"מתתיהו":["מתי"],"בן ציון":["בנצי"],"משה":["מוישי","מושי"],"אריה":["ארי","לייבי"],"אריה לייב":["ארי","לייבי"],"יעקב":["יענקי","קובי"],"יצחק":["איצי","איציק"],
+  "שמואל":["שמוליק","שמולי"],"דוד":["דוידי"],"אברהם":["אבי","אברמי"],"יוסף":["יוסי"],"ישראל":["שרולי","סרולי"],"אליהו":["אלי"],"נחום":["נחומי"],"שמחה":["שימי"],"חיים":["חיימי"],
+  "בנימין":["בני","ביני"],"אליעזר":["לייזר"],"אלעזר":["לייזר"],"שלמה":["שלומי"],"דב בער":["בערל","בערי"],"יהונתן":["יוני"],"יונתן":["יוני"],"מנחם מנדל":["מענדי"],"מנחם":["מענדי"]};
+function nameMatcher(students){
+  const both=(a,b)=>[`${a} ${b}`,`${b} ${a}`],uniq=a=>[...new Set(a.map(nrm))].filter(k=>k.trim().includes(" "));
+  const short=n=>{const w=n.split(/\s+/);return [...new Set([n,w[0],...(NICK[n]||[]),...w.flatMap(x=>NICK[x]||[])])]};
+  const keys=students.map(s=>{const f=(s.first||"").trim(),l=(s.family||"").trim(),ali=uniq(String(s.aliases||"").split(/[,\n]/).map(x=>x.trim()).filter(Boolean)),active=s.active!==false;
+    if(!f||!l)return {id:s.id,active,ali,own:uniq([s.name]),par:[],fam:[]};
+    return {id:s.id,active,ali,own:uniq(short(f).flatMap(x=>both(x,l))),par:uniq([s.father,s.mother].filter(Boolean).flatMap(n=>[n,n.split(/\s+/)[0]]).flatMap(x=>both(x,l))),fam:[nrm(l)]}});
+  const one=(T,k)=>{const m=keys.filter(x=>x[k].some(n=>T.includes(n)));if(m.length===1)return m[0].id;if(k==="fam")return null;const a=m.filter(x=>x.active);return a.length===1?a[0].id:null};
+  return text=>{const T=nrm(text);return one(T,"ali")||one(T,"own")||one(T,"par")||one(T,"fam")};
+}
+
 // ---------- one sync run ----------
 async function sync(){
   const year=new Date().getFullYear(),from=`${year}-01-01`;
@@ -53,13 +70,19 @@ async function sync(){
   try{state.groups=rowsOf(await nedarim("Manage3",{Action:"GetNewGroupe"})).map(g=>clean(g.Name)).filter(n=>n&&!n.startsWith("*"))}catch(e){out.errors.push(String(e.message||e))}
   const classify=classifier(meta,new Set(state.groups||[]));
   // tuition from a payer the yeshiva already linked to a bachur goes straight to him
-  const payerOf={};(await db.collection("students").get()).forEach(d=>((d.data().payers)||[]).forEach(p=>{payerOf[p]=d.id}));
-  const studentFor=t=>t.nedarim&&t.nedarim.groupe==="שכר לימוד"&&t.amount>0&&payerOf[t.nedarim.client]||null;
+  const stuSnap=await db.collection("students").get(),infoOf={};
+  (await db.collection("studentInfo").get()).forEach(d=>{infoOf[d.id]=d.data()});
+  const payerOf={};stuSnap.forEach(d=>((d.data().payers)||[]).forEach(p=>{payerOf[p]=d.id}));
+  // ...or a payment that says "שכר לימוד" and names the bachur or his father (the same matching as the app)
+  const byName=nameMatcher(stuSnap.docs.map(d=>({id:d.id,...d.data(),father:(infoOf[d.id]||{}).father,mother:(infoOf[d.id]||{}).mother})));
+  const studentFor=t=>{if(!(t.amount>0))return null;const tuit=t.nedarim&&t.nedarim.groupe==="שכר לימוד",text=[t.desc,t.note,t.nedarim&&t.nedarim.client].join(" ");
+    if(tuit&&payerOf[t.nedarim.client])return payerOf[t.nedarim.client];
+    return tuit||TUIT_RE.test(text)?byName(text):null};
   const batchWrite=async docs=>{for(let i=0;i<docs.length;i+=400){const b=db.batch();docs.slice(i,i+400).forEach(([ref,data,merge])=>merge?b.set(ref,data,{merge:true}):b.set(ref,data));await b.commit()}};
   const existing=async ids=>{const s=new Set();for(let i=0;i<ids.length;i+=100){const snaps=await db.getAll(...ids.slice(i,i+100).map(id=>db.doc("tx/"+id)));snaps.forEach(x=>{if(x.exists)s.add(x.id)})}return s};
   // a transaction someone already classified or noted keeps what they did; only new ones are written
   const addTx=async list=>{const have=await existing(list.map(t=>t.id));const fresh=list.filter(t=>!have.has(t.id));
-    await batchWrite(fresh.map(({id,...t})=>[db.doc("tx/"+id),{...t,cat:t.cat||classify(t),studentId:studentFor(t),note:t.note||"",source:SOURCE,auto:true}]));out.newTx+=fresh.length};
+    await batchWrite(fresh.map(({id,...t})=>[db.doc("tx/"+id),{...t,...(()=>{const sid=studentFor(t);return {cat:sid?"i_parents":t.cat||classify(t),studentId:sid}})(),note:t.note||"",source:SOURCE,auto:true}]));out.newTx+=fresh.length};
 
   // credit card donations (one-time, instalments and credit standing orders)
   const kevaPaid={};
