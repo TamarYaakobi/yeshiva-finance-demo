@@ -497,3 +497,4 @@ label.btn{cursor:pointer;display:inline-flex;align-items:center;justify-content:
 .stufloat{position:fixed;inset-inline:0;z-index:12;display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface);border-bottom:2px solid var(--gold);box-shadow:0 4px 12px rgba(0,0,0,.08);padding:6px max(16px,calc((100vw - 1180px)/2))}
 .stufloat .sf-name{background:none;border:0;font:inherit;font-weight:700;color:var(--brown);cursor:pointer;font-size:1rem}
 table.army td,table.army th{font-size:.88rem}
+.stufloat[hidden]{display:none}
