@@ -1176,6 +1176,7 @@ export function render(){
   const banner=YEAR!==THIS_YEAR?`<div class="readonly-banner">את/ה צופה בשנת <b>${YEAR}</b>. <a href="?" style="color:var(--gold)">חזרה ל־${THIS_YEAR}</a></div>`:"";
   app.innerHTML=banner+({dashboard:viewDashboard,budget:viewBudget,transactions:viewTransactions,students:viewStudents,donors:viewDonors,debts:viewDebts,meorot:viewMeorot,building:viewBuilding,reports:viewReports,settings:viewSettings}[v])();
   cardLabels();
+  requestAnimationFrame(()=>{try{stuFloat()}catch(e){}}); // the floating student bar follows every redraw (closed card, other screen)
   const f=fid&&document.getElementById(fid);
   if(f){f.focus();if(sel)try{f.setSelectionRange(...sel)}catch(e){}else if(focusAfter&&f.select)f.select()}
   focusAfter=null;
