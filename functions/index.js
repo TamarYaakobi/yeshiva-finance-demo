@@ -75,14 +75,17 @@ async function sync(){
   const payerOf={};stuSnap.forEach(d=>((d.data().payers)||[]).forEach(p=>{payerOf[p]=d.id}));
   // ...or a payment that says "שכר לימוד" and names the bachur or his father (the same matching as the app)
   const byName=nameMatcher(stuSnap.docs.map(d=>({id:d.id,...d.data(),father:(infoOf[d.id]||{}).father,mother:(infoOf[d.id]||{}).mother})));
-  const studentFor=t=>{if(!(t.amount>0))return null;const tuit=t.nedarim&&t.nedarim.groupe==="שכר לימוד",text=[t.desc,t.note,t.nedarim&&t.nedarim.client].join(" ");
+  // standing orders the yeshiva marked "not tuition" (a donor whose Nedarim category still says שכר לימוד)
+  const notTuition=new Set();(await db.collection("donors").where("forceDonor","==",true).get()).forEach(d=>notTuition.add(d.id));
+  const isNotTuition=t=>t.nedarim&&t.nedarim.kevaId&&notTuition.has((t.nedarim.type==="masav"?"m_":"k_")+t.nedarim.kevaId);
+  const studentFor=t=>{if(!(t.amount>0)||isNotTuition(t))return null;const tuit=t.nedarim&&t.nedarim.groupe==="שכר לימוד",text=[t.desc,t.note,t.nedarim&&t.nedarim.client].join(" ");
     if(tuit&&payerOf[t.nedarim.client])return payerOf[t.nedarim.client];
     return tuit||TUIT_RE.test(text)?byName(text):null};
   const batchWrite=async docs=>{for(let i=0;i<docs.length;i+=400){const b=db.batch();docs.slice(i,i+400).forEach(([ref,data,merge])=>merge?b.set(ref,data,{merge:true}):b.set(ref,data));await b.commit()}};
   const existing=async ids=>{const s=new Set();for(let i=0;i<ids.length;i+=100){const snaps=await db.getAll(...ids.slice(i,i+100).map(id=>db.doc("tx/"+id)));snaps.forEach(x=>{if(x.exists)s.add(x.id)})}return s};
   // a transaction someone already classified or noted keeps what they did; only new ones are written
   const addTx=async list=>{const have=await existing(list.map(t=>t.id));const fresh=list.filter(t=>!have.has(t.id));
-    await batchWrite(fresh.map(({id,...t})=>[db.doc("tx/"+id),{...t,...(()=>{const sid=studentFor(t);return {cat:sid?"i_parents":t.cat||classify(t),studentId:sid}})(),note:t.note||"",source:SOURCE,auto:true}]));out.newTx+=fresh.length};
+    await batchWrite(fresh.map(({id,...t})=>[db.doc("tx/"+id),{...t,...(()=>{if(isNotTuition(t))return {cat:"i_don",studentId:null,notTuition:true};const sid=studentFor(t);return {cat:sid?"i_parents":t.cat||classify(t),studentId:sid}})(),note:t.note||"",source:SOURCE,auto:true}]));out.newTx+=fresh.length};
 
   // credit card donations (one-time, instalments and credit standing orders)
   const kevaPaid={};
@@ -98,7 +101,7 @@ async function sync(){
         if(date<from||!amount)continue; // earlier years, and cancelled transactions (Amount 0)
         const who=clean(r.ClientName),grp=clean(r.Groupe),usd=String(r.Currency)==="2";
         list.push({id:"n_"+r.TransactionId,date,amount,desc:`נדרים פלוס – ${who||"תורם"}${grp?" · "+grp:""}`,
-          note:[usd?"סכום בדולר":"",clean(r.Comments),clean(r.TransactionType)].filter(Boolean).join(" · "),nedarim:{type:"credit",kevaId:clean(r.KevaId),groupe:grp,client:who,zeout:clean(r.Zeout)}});
+          note:[usd?"סכום בדולר":"",clean(r.Comments),clean(r.TransactionType)].filter(Boolean).join(" · "),nedarim:{type:"credit",kevaId:clean(r.KevaId),groupe:grp,client:who,zeout:clean(r.Zeout),phone:clean(r.Phone)}});
       }
       await addTx(list);
       if(rows.length<2000)break;
@@ -106,12 +109,30 @@ async function sync(){
     state.lastTxId=last;
   }catch(e){out.errors.push(String(e.message||e))}
 
+  // once: phone numbers for this year's donations that came in before phones were kept (a few calls a run, until done)
+  if(!state.phonesDone){
+    try{
+      let last=state.phoneLastId||"";
+      for(let call=0;call<3;call++){
+        const rows=rowsOf(await nedarim("Manage3",{Action:"GetHistoryJson",LastId:last,MaxId:"2000"}));
+        if(!rows.length){state.phonesDone=true;break}
+        const ups=[];
+        for(const r of rows){last=String(r.TransactionId||last);const ph=clean(r.Phone);if(ph&&isoDate(r.TransactionTime)>=from)ups.push(["n_"+r.TransactionId,ph])}
+        const have=await existing(ups.map(u=>u[0]));
+        await batchWrite(ups.filter(u=>have.has(u[0])).map(([id,ph])=>[db.doc("tx/"+id),{nedarim:{phone:ph}},true]));
+        out.phones=(out.phones||0)+ups.length;
+        if(rows.length<2000){state.phonesDone=true;break}
+      }
+      state.phoneLastId=last;
+    }catch(e){out.errors.push(String(e.message||e))}
+  }
+
   // money Nedarim recorded by hand: cash, cheques, bank transfers
   try{
     const rows=rowsOf(await nedarim("Manage3",{Action:"GetAchnasotJson",From:`01/01/${year}`,To:ddmmyyyy(new Date()),MaxId:"2000"}));
     await addTx(rows.map(r=>({id:"na_"+r.ID,date:isoDate(r.Date),amount:num(r.Amount),
       desc:`נדרים פלוס – ${clean(r.TypeName)||"הכנסה"} – ${clean(r.ClientName)||"תורם"}${clean(r.Groupe)?" · "+clean(r.Groupe):""}`,
-      note:[String(r.Currency)==="2"?"סכום בדולר":"",clean(r.Comments)].filter(Boolean).join(" · "),nedarim:{type:"manual",groupe:clean(r.Groupe),client:clean(r.ClientName)}})).filter(t=>t.date>=from&&t.amount));
+      note:[String(r.Currency)==="2"?"סכום בדולר":"",clean(r.Comments)].filter(Boolean).join(" · "),nedarim:{type:"manual",groupe:clean(r.Groupe),client:clean(r.ClientName),phone:clean(r.Phone)}})).filter(t=>t.date>=from&&t.amount));
   }catch(e){out.errors.push(String(e.message||e))}
 
   // bank standing orders (מס"ב): charges this year

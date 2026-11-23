@@ -92,7 +92,8 @@ for(let m=0;m<=CUR;m++){
 // one-off expenses
 [[1,12,"ציוד למטבח",-4200,"m_equip"],[2,20,"סעודת פורים",-11600,"x_purim"],[3,25,"בין הזמנים – מענקים",-8600,"x_bein"],[3,2,"מענק פסח לאברכים",-4000,"k_pesach"],[5,15,"טיול שנתי",-23400,"x_trip"],[6,9,"סיום מסכת",-3300,"x_siyum"],[8,28,"מענק סוכות לאברכים",-4000,"k_sukkot"],[9,6,"מלגות לבחורים",-9000,"x_milga"],[1,3,"רישום עמותה",-1700,"o_reg"]].forEach(a=>tx(...a));
 // the Purim campaign: a couple of hundred donations in a few days
-for(let k=0;k<430;k++)ned(2,10+Math.floor(rnd()*6),person(),pick([`הבה"ח ${pick(S.students).name} נ"י`,`הבה"ח ${pick(S.students).name} נ"י`,"הרב "+pick(LAST),"קמפיין פורים"]),pick([36,52,100,100,180,180,250,360,500,770,1000,1800,2600]),"i_purim");
+for(let k=0;k<430;k++){const who=person(),grp=pick([`הבה"ח ${pick(S.students).name} נ"י`,`הבה"ח ${pick(S.students).name} נ"י`,"הרב "+pick(LAST),"קמפיין פורים"]);
+  ned(2,10+Math.floor(rnd()*6),who,grp,pick([36,52,100,100,180,180,250,360,500,770,1000,1800,2600]),"i_purim",{nedarim:{type:"credit",groupe:grp,client:who,phone:phone()}})}
 // a few transactions still waiting to be classified
 [[CUR,2,"העברה מ- י. שטרן",1500],[CUR,3,"הפקדת מזומן",2400],[CUR>0?CUR-1:0,22,"הוראת קבע – ח. פרידמן",-650]].forEach(([m,d,desc,a])=>tx(m,Math.min(d,DAY),desc,a,""));
 

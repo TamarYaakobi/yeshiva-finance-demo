@@ -1,3 +1,4 @@
+import {toExcel,toPDF,readSheets,cellText,findHeader,guessMap,parseAmount,parseDate} from "./tableio.js";
 // ---------- calendar: Gregorian budget year (?year=2025 shows an earlier year) ----------
 const THIS_YEAR=new Date().getFullYear();
 const YEAR=(()=>{const y=+new URLSearchParams(location.search||"").get("year");return y>=2000&&y<=THIS_YEAR+1?y:THIS_YEAR})();
@@ -160,7 +161,13 @@ const stuTx=s=>S.tx.filter(x=>x.studentId===s.id&&monthIndex(x.date)>=0);
 const stuPaid=s=>s.payments.filter(p=>monthIndex(p.date)>=0).reduce((a,p)=>a+p.amount,0)+stuTx(s).reduce((a,x)=>a+x.amount,0);
 const isActive=s=>s.active!==false;
 function stuRows(){return S.students.map(s=>{const act=isActive(s),due=act?s.fee*DUE_MONTHS:0,paid=stuPaid(s),bal=due-paid;return {s,act,due,paid,bal,late:act&&s.fee?Math.floor(bal/s.fee+1e-9):0}})}
-const isTuition=x=>x.amount>0&&(x.cat==="i_parents"||(x.nedarim&&x.nedarim.groupe===TUITION_GROUPE));
+const isTuition=x=>x.amount>0&&!x.notTuition&&(x.cat==="i_parents"||(x.nedarim&&x.nedarim.groupe===TUITION_GROUPE));
+// Nedarim Plus issues its own receipt for every payment it takes
+const fromNedarim=x=>!!x.nedarim||x.source==="נדרים פלוס";
+const hasRcpt=x=>!!(x.rcpt||x.rcptPaper||fromNedarim(x));
+// standing orders for tuition are not donations – they belong to the tuition screen
+const isTuitionDonor=d=>d.groupe===TUITION_GROUPE&&!d.forceDonor;
+const donorList=()=>S.donors.filter(d=>!isTuitionDonor(d));
 const payerOf=x=>(x.nedarim&&x.nedarim.client)||"";
 // ---------- finding a bachur by name in a transaction ----------
 // Hebrew spelling varies (אהרון / אהרן), so ו and י are ignored, and punctuation too
@@ -263,8 +270,10 @@ function alerts(){
   if(unc)out.push(["warn",`${unc} תנועות מחכות לסיווג`,"#transactions","unc"]);
   ["elec","water"].forEach(k=>{const miss=[];for(let i=0;i<CUR;i++){const b=(S.meorot.bills[i]||{})[k];if(b==null||b==="")miss.push(MONTHS[i][0])}
     if(miss.length)out.push(["warn",`לא הוזן חשבון ${k==="elec"?"חשמל":"מים"} ל${miss.length>3?`${miss.length} חודשים (${miss[0]} עד ${miss[miss.length-1]})`:miss.join(", ")}`,"#meorot"])});
-  const failed=S.donors.filter(d=>d.status==="failed"&&!d.handled);
+  const failed=donorList().filter(d=>d.status==="failed"&&!d.handled);
   if(failed.length)out.push(["warn",`${failed.length===1?"הוראת קבע של תורם נכשלה":failed.length+" הוראות קבע של תורמים נכשלו"}`,"#donors"]);
+  const tfail=S.donors.filter(d=>isTuitionDonor(d)&&d.status==="failed"&&!d.handled);
+  if(tfail.length)out.push(["warn",`${tfail.length===1?"הוראת קבע של שכר לימוד נכשלה":tfail.length+" הוראות קבע של שכר לימוד נכשלו"}`,"#students"]);
   const late=stuRows().filter(r=>r.late>=2);
   if(late.length)out.push(["warn",`${late.length} בחורים בפיגור של חודשיים ומעלה בשכר הלימוד`,"#students"]);
   const unl=S.students.length?S.tx.filter(x=>isTuition(x)&&!x.studentId&&monthIndex(x.date)>=0).length:0;
@@ -439,7 +448,7 @@ function viewBudget(){
   <div class="filters">
     <input type="search" id="bq" placeholder="חיפוש לפי שם סעיף, קטגוריה או סכום" value="${esc(BF.q)}" aria-label="חיפוש בתקציב">
     <select id="bgroup" aria-label="קטגוריה"><option value="all">כל הקטגוריות</option><option value="inc"${BF.group==="inc"?" selected":""}>הכנסות</option>${S.budget.expenses.map((g,gi)=>`<option value="g${gi}"${BF.group==="g"+gi?" selected":""}>${esc(g.group)}</option>`).join("")}</select>
-    <button data-grpall="close" data-keys="${esc(allKeys.join("|"))}">▴ לסגור הכול</button><button data-grpall="open" data-keys="${esc(allKeys.join("|"))}">▾ לפתוח הכול</button>
+    <button data-grpall="close" data-keys="${esc(allKeys.join("|"))}">▴ לסגור הכול</button><button data-grpall="open" data-keys="${esc(allKeys.join("|"))}">▾ לפתוח הכול</button>${xmenu("budget","ייצוא התקציב")}
   </div>
   <div class="budcols">
     ${showExp?`<section class="sheet"><div class="coltop"><div class="label">סה״כ הוצאות מתוכננות</div><div class="value num" style="color:var(--expense)">${ils(B.exp)}</div></div>
@@ -458,7 +467,7 @@ function txMatches(x,items){
   const k=kindOf(x,items);
   if(TF.type==="in"&&k!=="income")return false;
   if((TF.type==="out"||TF.type==="norc")&&k!=="expense")return false;
-  if(TF.type==="norc"&&(x.rcpt||x.rcptPaper))return false;
+  if(TF.type==="norc"&&hasRcpt(x))return false;
   if(TF.cat!=="all"){
     if(OUTSIDE.has(TF.cat))return x.cat===TF.cat;
     if(TF.cat==="inc")return !!x.cat&&(items[x.cat]||{}).kind==="income";
@@ -482,10 +491,12 @@ function viewTransactions(){
   const sources=[...new Set(S.tx.map(x=>x.source).filter(Boolean))].sort();
   const allSel=list.length&&list.every(x=>selTx.has(x.id));
   const rcptCell=x=>x.rcpt?`<span class="tag">${ico("clip",`data-viewrc="${x.id}"`,"צפייה בקבלה")}<button class="linkbtn" data-viewrc="${x.id}">${esc(x.rcpt.name)}</button>${ed?ico("del",`data-delrc="${x.id}"`,"הסרת הקבלה"):""}</span>`
+    :fromNedarim(x)?'<span class="tag ok">✓ קבלה בנדרים</span>'
     :x.rcptPaper?`<span class="tag ok">✓ יש קבלה (לא סרוקה)${ed?ico("del",`data-paper="${x.id}"`,"ביטול הסימון"):""}</span>`
     :(ed&&kindOf(x,items)==="expense"?`<label class="ico faint" title="צירוף קבלה (צילום או קובץ)" aria-label="צירוף קבלה"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="${SVG.clip}"/></svg><input type="file" data-rcpt="${x.id}" accept="image/*,application/pdf" hidden></label>${ico("paper",`data-paper="${x.id}"`,"יש קבלה בנייר (בלי לסרוק)","faint")}`:"");
   const links=x=>{let h="";
     if(x.cat===DEBT&&x.amount<0&&S.debts.length)h+=`<select class="linksel" data-txdebt="${x.id}" aria-label="איזה חוב"${ed?"":" disabled"}><option value="">— לאיזה חוב? —</option>${S.debts.map(d=>`<option value="${d.id}"${x.debtId===d.id?" selected":""}>${esc(d.name)}</option>`).join("")}</select>`;
+    if(isTuition(x)&&ed&&!x.studentId)h+=`<button class="linkbtn small" data-nottuit="${x.id}">לא שכר לימוד?</button>`;
     if(isTuition(x)&&S.students.length)h+=`<select class="linksel" data-txstu="${x.id}" aria-label="איזה בחור"${ed?"":" disabled"}><option value="">— של איזה בחור? —</option>${stuSorted().map(s=>`<option value="${s.id}"${x.studentId===s.id?" selected":""}>${stuName(s)}</option>`).join("")}</select>`;
     if(x.cat===BUILDING)h+='<div class="hint" style="font-size:.75rem">נכנס לקרן הבניין</div>';
     if(x.cat===DEBT)h+='<div class="hint" style="font-size:.75rem">לא נספר בהכנסות ובהוצאות</div>';
@@ -517,7 +528,7 @@ function viewTransactions(){
     <label for="fNote">הערה<input id="fNote"></label>
     <button class="btn" type="submit">הוספה</button>
   </form></details>`:""}
-  <section class="sheet"><div class="sheet-head"><h2>תנועות</h2>${ed&&unc?`<button class="btn ghost" data-act="rules">סיווג אוטומטי לפי הכללים</button>`:""}</div>
+  <section class="sheet"><div class="sheet-head"><h2>תנועות</h2><div class="xbar">${ed&&unc?`<button class="btn ghost small" data-act="rules">סיווג אוטומטי לפי הכללים</button>`:""}${ed?`<button class="btn ghost small" data-imp="tx">⇪ ייבוא מאקסל (בנק)</button>`:""}${xmenu("tx","ייצוא הרשימה")}</div></div>
   <div class="filters">
     <input type="search" id="tq" placeholder="חיפוש לפי תיאור, הערה או סכום" value="${esc(TF.q)}" aria-label="חיפוש בתנועות">
     <select id="tfMonth" aria-label="תקופה"><option value="all">כל השנה</option>${MONTHS.map((m,i)=>i<=CUR?`<option value="${i}"${TF.month===String(i)?" selected":""}>${m[0]} ${YEAR}</option>`:"").join("")}<option value="range"${TF.month==="range"?" selected":""}>בין תאריכים…</option></select>
@@ -575,7 +586,7 @@ function viewDebts(){
     </td></tr>`};
   return `${ed?"":`<div class="readonly-banner">צפייה בלבד.</div>`}
   <div class="sepnote"><b>קופה נפרדת.</b> חובות וגמ״חים לא נספרים בהכנסות ובהוצאות של התקציב השוטף.</div>
-  <section class="sheet"><div class="sheet-head"><h2>חובות עבר וגמ״חים</h2></div>
+  <section class="sheet"><div class="sheet-head"><h2>חובות עבר וגמ״חים</h2><div class="xbar">${ed?`<button class="btn ghost small" data-imp="debts">⇪ ייבוא מאקסל</button>`:""}${xmenu("debts")}</div></div>
   <div class="summary"><div><div class="label">סה״כ חובות</div><div class="value num">${ils(total)}</div></div><div><div class="label">הוחזר עד כה</div><div class="value num">${ils(paid)}</div></div><div><div class="label">נשאר להחזיר</div><div class="value num" style="color:var(--bad)">${ils(total-paid)}</div></div></div></section>
   <section class="sheet">
   ${ed?`<details class="addbox inner" data-open="debt"${openAdd.has("debt")?" open":""}><summary><span class="plus">+</span> הוספת חוב</summary><form class="form" id="debtForm">
@@ -624,7 +635,7 @@ function viewMeorot(){
       <div><div class="label">שכירות וחיובים מתחילת השנה</div><div class="value num">${ils(rent)}</div></div>
       <div><div class="label">${L.bal>=0?"המשכיר חייב לנו":"אנחנו חייבים למשכיר"}</div><div class="value num" style="color:${L.bal<0?"var(--bad)":"var(--good)"}">${ils(Math.abs(L.bal))}</div></div>
     </div></section>
-  <section class="sheet"><div class="sheet-head"><h2>תנועות בארנק המשכיר</h2><span class="hint">השכירות נרשמת לבד כל חודש</span></div>
+  <section class="sheet"><div class="sheet-head"><h2>תנועות בארנק המשכיר</h2><span class="hint">השכירות נרשמת לבד כל חודש</span><div class="xbar">${ed?`<button class="btn ghost small" data-imp="meo">⇪ ייבוא תנועות מאקסל</button><button class="btn ghost small" data-imp="bills">⇪ ייבוא חשבונות חשמל ומים</button>`:""}${xmenu("meorot","ייצוא ההתחשבנות")}</div></div>
   ${ed?`<form class="form" id="mForm">
     <label for="mDate">תאריך<input id="mDate" type="date" value="${iso(TODAY)}" required></label>
     <label for="mType">סוג<select id="mType"><option value="received">המשכיר קיבל עבורנו (הכנסה)</option><option value="charge">חיוב נוסף מהמשכיר (הוצאה)</option><option value="paid_to">שילמנו למשכיר</option><option value="paid_from">המשכיר העביר לנו</option></select></label>
@@ -648,7 +659,7 @@ function viewMeorot(){
 function viewBuilding(){
   const ed=can().edit,b=S.building,all=buildingEntries(),inn=all.filter(e=>e.amount>0).reduce((s,e)=>s+e.amount,0),out=all.filter(e=>e.amount<0).reduce((s,e)=>s-e.amount,0);
   return `<div class="sepnote"><b>קופה נפרדת.</b> קרן הבניין לא נספרת בתקציב השוטף. תנועה שמסווגים בתנועות כ״קרן הבניין״ מופיעה כאן לבד.</div>
-  <section class="sheet"><div class="sheet-head"><h2>קרן הבניין</h2></div>
+  <section class="sheet"><div class="sheet-head"><h2>קרן הבניין</h2>${xmenu("building")}</div>
   <div class="summary"><div><div class="label">נאסף</div><div class="value num">${ils(inn)}</div></div><div><div class="label">הוצאות</div><div class="value num">${ils(out)}</div></div><div><div class="label">יתרה בקרן</div><div class="value num">${ils(inn-out)}</div></div></div>
   <div style="margin-top:14px"><div class="hint" style="margin-bottom:6px">יעד הקרן: ${ed?`<input class="small num inline" data-goal type="number" min="0" value="${b.goal||""}" placeholder="להזין" aria-label="יעד קרן הבניין">`:`<span class="num">${ils(b.goal)}</span>`}</div>
     ${b.goal?`<div class="prog" style="height:12px"><i style="width:${Math.min(100,inn/b.goal*100).toFixed(1)}%;background:var(--gold)"></i></div>`:""}</div></section>
@@ -670,7 +681,7 @@ const SHIURIM=[["","ללא שיעור"],["א׳","שיעור א׳"],["ב׳","שי
 // personal details – kept in studentInfo/<id>, which only the yeshiva staff can open (not the accountant)
 const INFO_F=[["zeout","מספר זהות"],["birth","תאריך לידה","date"],["hebBirth","תאריך לידה עברי"],["phone","טלפון אישי","tel"],["phoneHome","טלפון בבית","tel"],
   ["street","רחוב"],["city","עיר"],["father","שם האב"],["fatherPhone","נייד האב","tel"],["mother","שם האם"],["motherPhone","נייד האם","tel"],["kupah","קופת חולים"],["entered","תאריך כניסה לישיבה","date"],["remark","הערות"]];
-const DOC_KINDS=["אישור רפואי","תעודת זהות / דרכון","אישור לימודים","אחר"];
+const DOC_KINDS=["אישור רפואי","אישור לנישואין","תעודת זהות / דרכון","אישור לימודים","אחר"];
 const photoUrl={},photoWant=new Set();
 const stuName=s=>esc(s.name)+(isActive(s)?"":" (לא פעיל)");
 const stuSorted=()=>[...S.students].sort((a,b)=>(isActive(b)-isActive(a))||a.name.localeCompare(b.name,"he"));
@@ -694,10 +705,42 @@ function stuFile(s){
       ${docs.length?`<ul class="docs">${docs.map(d=>`<li><button class="linkbtn" data-sdoc="${s.id}:${d.id}">📄 ${esc(d.name)}</button> <span class="chip neutral">${esc(d.kind)}</span> <span class="muted num">${grDate(d.date)}</span>${ico("del",`data-delsdoc="${s.id}:${d.id}"`,"מחיקת המסמך")}</li>`).join("")}</ul>`:'<p class="muted">עדיין לא צורפו מסמכים.</p>'}
       <div class="form docadd"><label for="sdKind-${s.id}">סוג המסמך<select id="sdKind-${s.id}">${DOC_KINDS.map(k=>`<option>${k}</option>`).join("")}</select></label>
         <label class="btn ghost">צירוף קובץ (תמונה או PDF)<input type="file" accept="image/*,application/pdf" data-sdocadd="${s.id}" hidden></label></div>
+      <h3>דחיות צבא</h3>
+      ${(I.army||[]).length?`<div class="tbl-wrap"><table class="army"><thead><tr><th>שנה</th><th>בתוקף עד</th><th>הערה</th><th>מסמך</th><th></th></tr></thead><tbody>
+        ${[...I.army].sort((a,b)=>String(b.year).localeCompare(String(a.year))).map(a=>`<tr><td><b>${esc(a.year)}</b></td><td class="num">${grDate(a.until)}</td><td>${esc(a.note)}</td>
+          <td>${a.path?`<button class="linkbtn" data-sarmy="${s.id}:${a.id}">📄 ${esc(a.name)}</button>`:`<label class="linkbtn">צירוף<input type="file" accept="image/*,application/pdf" data-armyfile="${s.id}:${a.id}" hidden></label>`}</td>
+          <td>${ico("del",`data-delarmy="${s.id}:${a.id}"`,"מחיקת השורה")}</td></tr>`).join("")}</tbody></table></div>`:'<p class="muted">עדיין לא נרשמו דחיות.</p>'}
+      <form class="form" data-armyadd="${s.id}">
+        <label for="arYear-${s.id}">שנה<input id="arYear-${s.id}" value="${esc(armyYear())}" required></label>
+        <label for="arUntil-${s.id}">בתוקף עד<input id="arUntil-${s.id}" type="date"></label>
+        <label for="arNote-${s.id}">הערה<input id="arNote-${s.id}"></label>
+        <label for="arFile-${s.id}">מסמך (לא חובה)<input id="arFile-${s.id}" type="file" accept="image/*,application/pdf"></label>
+        <button class="btn" type="submit">הוספת דחייה</button></form>
       ${upBusy===s.id?'<p class="hint">מעלה…</p>':""}
     </div></div>`;
 }
 let upBusy=null;
+function armyUpload(sid,id,f){
+  if(!f.type.startsWith("image/")&&f.size>15*1024*1024){alert("הקובץ גדול מדי (עד 15MB).");return}
+  const I=S.info[sid],a=I.army.find(x=>x.id===id),st=S.students.find(x=>x.id===sid),path=`students/${sid}/army-${id}-${f.name.replace(/[\/\\#?]/g,"_")}`;upBusy=sid;render();
+  (f.type.startsWith("image/")?shrink(f,1800,.8):Promise.resolve(f)).then(b=>W.upload(path,b)).then(()=>{a.path=path;a.name=f.name;commit(`תלמידים: צורף אישור דחייה ל${st.name} לשנת ${a.year}`,["studentInfo",{id:sid,...I}])})
+    .catch(()=>alert("לא הצלחתי להעלות את הקובץ.")).finally(()=>{upBusy=null;render()});
+}
+// while scrolling inside an open student card, a bar on top says whose card it is and closes it
+function stuFloat(){
+  let bar=document.getElementById("stuFloat");const top=(document.querySelector("nav.tabs:not([hidden])")||{offsetHeight:0}).offsetHeight;
+  const p=[...document.querySelectorAll("tr[data-stupanel]")].find(el=>{const r=el.getBoundingClientRect();return r.top<top+10&&r.bottom>top+90});
+  if(!p||current().v!=="students"){if(bar)bar.hidden=true;return}
+  if(!bar){bar=document.createElement("div");bar.id="stuFloat";bar.className="stufloat";document.body.appendChild(bar);
+    bar.addEventListener("click",e=>{const b=e.target.closest("[data-sid]");if(!b)return;const id=b.dataset.sid;
+      if(b.dataset.act==="close"){openStu.delete(id);render();const row=document.querySelector(`[data-togs="${id}"]`);if(row)row.scrollIntoView({block:"center"})}
+      else{const el=document.querySelector(`tr[data-stupanel="${id}"]`);if(el)scrollTo({top:el.getBoundingClientRect().top+scrollY-top-60,behavior:"smooth"})}})}
+  bar.style.top=top+"px";bar.hidden=false;const id=p.dataset.stupanel;
+  bar.innerHTML=`<button type="button" class="sf-name" data-sid="${id}" data-act="top">▲ ${esc(p.dataset.name)}</button><button type="button" class="btn ghost small" data-sid="${id}" data-act="close">✕ סגירה</button>`;
+}
+addEventListener("scroll",()=>requestAnimationFrame(stuFloat),{passive:true});
+// army deferments are renewed per Hebrew year (תשפ״ז)
+const armyYear=()=>{try{const y=parseInt(heFmt.formatToParts(TODAY).find(p=>p.type==="year").value);return isNaN(y)?String(YEAR):gem(y%1000)}catch(e){return String(YEAR)}};
 function viewStudents(){
   const ed=can().edit,all=stuRows(),via=viaIndex(),viaSum=id=>(via[id]||[]).reduce((a,x)=>a+x.amount,0);
   const act=all.filter(r=>r.act),due=act.reduce((s,r)=>s+r.due,0),paid=act.reduce((s,r)=>s+r.paid,0),behind=act.filter(r=>r.bal>0);
@@ -710,7 +753,7 @@ function viewStudents(){
   const stuOpts=sel=>`<option value="">— לבחור בחור —</option>${stuSorted().map(s=>`<option value="${s.id}"${sel===s.id?" selected":""}>${stuName(s)}</option>`).join("")}`;
   const panel=r=>{const pays=[...r.s.payments.map(p=>({...p,kind:"manual"})),...stuTx(r.s).map(x=>({id:x.id,date:x.date,amount:x.amount,method:x.source,note:x.desc,kind:"tx"}))].sort((a,b)=>a.date<b.date?1:-1);
     const vl=(via[r.s.id]||[]).sort((a,b)=>a.date<b.date?1:-1);
-    return `<tr class="panel"><td colspan="${cols}">
+    return `<tr class="panel" data-stupanel="${r.s.id}" data-name="${esc(r.s.name)}"><td colspan="${cols}">
     ${ed&&S.info?stuFile(r.s):""}
     <h3>תשלומי שכר לימוד של ${esc(r.s.name)}</h3>
     ${(r.s.payers||[]).length?`<p class="hint" style="margin:0 0 8px">משלמים שמשויכים אוטומטית: ${r.s.payers.map(p=>`<span class="tag">${esc(p)}${ed?ico("del",`data-delpayer="${r.s.id}:${esc(p)}"`,"הסרת המשלם"):""}</span>`).join(" ")}</p>`:""}
@@ -724,21 +767,26 @@ function viewStudents(){
       <label for="spNote-${r.s.id}">הערה<input id="spNote-${r.s.id}"></label>
       <button class="btn" type="submit">הוספת תשלום ידני</button></form>
       <p class="hint">תשלום שנכנס בנדרים או בבנק לא צריך להזין כאן – משייכים אותו לבחור, והוא מופיע לבד.</p>`:""}
-    <h3>תרומות פורים שהגיעו דרכו${vl.length?` · <span class="num">${ils(viaSum(r.s.id))}</span> מ־${vl.length} תורמים`:""}</h3>
-    ${vl.length?`<table><thead><tr><th>תאריך</th><th>תורם</th><th class="n">סכום</th></tr></thead><tbody>${vl.slice(0,viaShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td></tr>`).join("")}</tbody></table>
+    <div class="sheet-head" style="margin:14px 0 8px"><h3 style="margin:0">תרומות פורים שהגיעו דרכו${vl.length?` · <span class="num">${ils(viaSum(r.s.id))}</span> מ־${vl.length} תורמים`:""}</h3>${vl.length&&ed?xmenu("purim:"+r.s.id,"ייצוא התורמים"):""}</div>
+    ${vl.length?`<table><thead><tr><th>תאריך</th><th>תורם</th>${ed?"<th>טלפון</th>":""}<th class="n">סכום</th></tr></thead><tbody>${vl.slice(0,viaShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td>${ed?`<td class="num" dir="ltr">${esc((x.nedarim||{}).phone||"")}</td>`:""}<td class="n num">${ils(x.amount)}</td></tr>`).join("")}</tbody></table>
       ${vl.length>viaShown?`<p class="more"><button class="btn ghost" data-morevia>הצגת עוד (מתוך ${vl.length})</button></p>`:""}`:'<p class="muted">לא נמצאו תרומות על שמו.</p>'}
     ${ed?`<div class="stu-actions"><button class="btn ghost" type="button" data-sact="${r.s.id}">${r.act?"העברה ללא פעילים":"החזרה לפעילים"}</button>
       <button class="btn danger" type="button" data-delstu="${r.s.id}">מחיקת הבחור מהמערכת</button></div>`:""}
+    <p style="text-align:center;margin:14px 0 4px"><button class="btn ghost" type="button" data-togs="${r.s.id}">✕ סגירת הכרטיס של ${esc(r.s.name)}</button></p>
   </td></tr>`};
   return `${ed?"":`<div class="readonly-banner">צפייה בלבד.</div>`}
   <section class="sheet"><div class="sheet-head"><h2>שכר לימוד ${YEAR}</h2><span class="hint">התשלום ב־${DUE_DAY} לכל חודש · עד היום: ${DUE_MONTHS} חודשים · ${act.length} בחורים פעילים</span></div>
     <div class="summary"><div><div class="label">צריך היה להיכנס עד היום</div><div class="value num">${ils(due)}</div></div><div><div class="label">שולם</div><div class="value num">${ils(paid)}</div></div><div><div class="label">חסר · ${behind.length} בחורים</div><div class="value num" style="color:var(--bad)">${ils(behind.reduce((s,r)=>s+r.bal,0))}</div></div>
     <div><div class="label">פורים – דרך הבחורים</div><div class="value num">${ils(viaAll)}</div></div></div></section>
+  ${(()=>{const tk=S.donors.filter(d=>isTuitionDonor(d)&&d.status==="failed");return tk.length?`<section class="sheet"><div class="sheet-head"><h2>הוראות קבע של שכר לימוד שנכשלו</h2><span class="chip ${tk.some(d=>!d.handled)?"bad":"good"}">${tk.length}</span></div>
+    <div class="tbl-wrap"><table><thead><tr><th>משלם</th><th class="n">חודשי</th><th>מה קרה</th><th></th></tr></thead><tbody>
+    ${tk.map(d=>`<tr><td>${esc(d.name)}</td><td class="n num">${ils(d.monthly||0)}</td><td>${esc(d.note)}</td><td>${d.handled?'<span class="chip good">✓ טופל</span>':ed?`<button class="btn ghost small" data-handled="${esc(d.id)}">סימון שטופל</button>`:""}</td></tr>`).join("")}</tbody></table></div>
+    <p class="hint">את אמצעי התשלום מעדכנים בנדרים פלוס.</p></section>`:""})()}
   ${unlinked.length?`<section class="sheet"><div class="sheet-head"><h2>תשלומי שכר לימוד שעוד לא שויכו</h2><span class="chip warn">${unlinked.length}</span>
       <button class="linkbtn" data-togunlinked>${showUnlinked?"הסתרה":"הצגה"}</button>${ed&&S.students.length?`<button class="btn ghost small" data-autolink>שיוך אוטומטי לפי שמות</button>`:""}</div>
     ${showUnlinked?(S.students.length?`<p class="hint" style="margin-top:0">בוחרים לכל תשלום של איזה בחור הוא. המערכת זוכרת את המשלם, ומשייכת לבד גם את שאר התשלומים שלו – עכשיו ובעתיד.</p>
     <div class="tbl-wrap"><table><thead><tr><th>תאריך</th><th>משלם</th><th class="n">סכום</th><th>של איזה בחור</th></tr></thead><tbody>
-    ${unlinked.slice(0,unlinkedShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td><td>${ed?`<select data-linkstu="${x.id}" aria-label="של איזה בחור">${stuOpts("")}</select>`:""}</td></tr>`).join("")}
+    ${unlinked.slice(0,unlinkedShown).map(x=>`<tr><td><span class="num">${grDate(x.date)}</span></td><td>${esc(payerOf(x)||x.desc)}</td><td class="n num">${ils(x.amount)}</td><td>${ed?`<select data-linkstu="${x.id}" aria-label="של איזה בחור">${stuOpts("")}</select> <button class="linkbtn small" data-nottuit="${x.id}">לא שכר לימוד</button>`:""}</td></tr>`).join("")}
     </tbody></table></div>${unlinked.length>unlinkedShown?`<p class="more"><button class="btn ghost" data-moreunlinked>הצגת עוד ${Math.min(60,unlinked.length-unlinkedShown)} (מתוך ${unlinked.length})</button></p>`:""}`:'<p class="muted">קודם מוסיפים את הבחורים למטה, ואז משייכים כאן את התשלומים.</p>'):""}</section>`:""}
   <section class="sheet">
   ${ed?`<details class="addbox inner" data-open="stu"${openAdd.has("stu")?" open":""}><summary><span class="plus">+</span> הוספת בחור</summary><form class="form" id="stuForm">
@@ -752,6 +800,7 @@ function viewStudents(){
     <div class="form"><label for="impFee">תשלום חודשי לבחורים פעילים חדשים<input id="impFee" type="number" min="0" value="0"></label>
       <label class="btn">בחירת קובץ אקסל<input type="file" accept=".xlsx" data-simport hidden></label></div>
     <p class="hint">תשלומים שנכנסו לפני שהבחור נוסף: <button class="linkbtn" data-autolink>שיוך אוטומטי לפי שמות</button></p></details>`:""}
+  <div class="filters xbar">${xmenu("students","ייצוא הרשימה")}${ed&&S.info?xmenu("studentsFull","ייצוא כל הבחורים עם הפרטים"):""}${ed?`<button class="btn ghost small" data-imp="stupay">⇪ ייבוא תשלומים מאקסל</button>`:""}</div>
   <div class="filters"><input type="search" id="sq" placeholder="חיפוש לפי שם" value="${esc(SF.q)}" aria-label="חיפוש בחור">
     <select id="sfShiur" aria-label="שיעור"><option value="all">כל השיעורים</option>${SHIURIM.map(([v,l])=>`<option value="${v}"${SF.shiur===v?" selected":""}>${l}</option>`).join("")}</select>
     ${[["active",`פעילים · ${act.length}`],["inactive",`לא פעילים · ${nIn}`],["all","כולם"]].map(([k,l])=>`<button data-sact-f="${k}" aria-pressed="${SF.act===k}">${l}</button>`).join("")}
@@ -777,18 +826,20 @@ function donorTx(d){
 }
 function viewDonors(){
   const ed=can().edit,q=DF.q.trim();
+  const DS=donorList();
   if(!S.donors.length)return `<section class="sheet"><div class="sheet-head"><h2>תורמים</h2><span class="chip warn">ממתין לסנכרון מנדרים פלוס</span></div>
     <p class="muted">הרשימה מתמלאת אוטומטית מנדרים פלוס.</p></section>`;
-  const act=S.donors.filter(d=>d.status==="active"),failed=S.donors.filter(d=>d.status==="failed");
-  const list=S.donors.filter(d=>(!q||d.name.includes(q)||(d.city||"").includes(q))&&(DF.f==="all"||d.status===DF.f)).sort((a,b)=>b.ytd-a.ytd);
+  const act=DS.filter(d=>d.status==="active"),failed=DS.filter(d=>d.status==="failed");
+  const list=DS.filter(d=>(!q||d.name.includes(q)||(d.city||"").includes(q))&&(DF.f==="all"||d.status===DF.f)).sort((a,b)=>b.ytd-a.ytd);
   const shown=list.slice(0,donorShown);
   return `<section class="sheet"><div class="sheet-head"><h2>תורמים</h2><span class="hint">מתעדכן אוטומטית מנדרים פלוס</span></div>
     <div class="summary"><div><div class="label">הוראות קבע פעילות · ${act.length}</div><div class="value num">${ils(act.reduce((s,d)=>s+(d.monthly||0),0))} לחודש</div></div>
     <div><div class="label">הוראות קבע שנכשלו</div><div class="value num" style="color:${failed.length?"var(--bad)":"var(--good)"}">${failed.length}</div><div class="hint">${failed.length?`הכנסה חודשית שנעצרה: <span class="num">${ils(failed.reduce((s,d)=>s+(d.monthly||0),0))}</span>`:"הכול תקין"}</div></div>
-    <div><div class="label">נתרם השנה (הוראות קבע ו־30 התורמים הגדולים)</div><div class="value num">${ils(S.donors.reduce((s,d)=>s+(d.ytd||0),0))}</div></div></div></section>
+    <div><div class="label">נתרם השנה (הוראות קבע ו־30 התורמים הגדולים)</div><div class="value num">${ils(DS.reduce((s,d)=>s+(d.ytd||0),0))}</div></div></div></section>
+    <p class="hint" style="margin:0 0 10px">הוראות קבע של שכר לימוד לא מופיעות כאן. הן נמצאות בלשונית <a href="#students">שכר לימוד</a>.</p>
   <section class="sheet">
   <div class="filters"><input type="search" id="dq" placeholder="חיפוש לפי שם או עיר" value="${esc(DF.q)}" aria-label="חיפוש תורם">
-    ${[["all","כולם"],["active","קבע פעיל"],["failed","נכשלו"],["ended","הסתיימו"],["once","חד פעמי"]].map(([k,l])=>`<button data-df="${k}" aria-pressed="${DF.f===k}">${l}</button>`).join("")}</div>
+    ${[["all","כולם"],["active","קבע פעיל"],["failed","נכשלו"],["ended","הסתיימו"],["once","חד פעמי"]].map(([k,l])=>`<button data-df="${k}" aria-pressed="${DF.f===k}">${l}</button>`).join("")}${xmenu("donors","ייצוא הרשימה")}</div>
   ${ed&&selDonors.size?`<div class="bulkbar"><b>${selDonors.size} נבחרו</b><button class="btn small" data-bulkdonor="handled">סימון שטופל</button><button class="linkbtn" data-bulkdonor="none">ביטול הבחירה</button></div>`:""}
   <div class="tbl-wrap"><table><thead><tr><th class="c-chk">${ed?`<input type="checkbox" data-selalldonors${list.length&&list.every(d=>selDonors.has(d.id))?" checked":""} aria-label="בחירת כולם">`:""}</th><th></th><th>תורם</th><th>סוג</th><th class="n">חודשי</th><th class="n">השנה</th><th>תרומה אחרונה</th><th>מה לעשות</th></tr></thead><tbody>
   ${shown.map(d=>{const open=openDonor.has(d.id);return `<tr class="${selDonors.has(d.id)?"picked":""}"><td class="c-chk">${ed?`<input type="checkbox" data-seldonor="${d.id}"${selDonors.has(d.id)?" checked":""} aria-label="בחירה">`:""}</td>
@@ -821,7 +872,7 @@ function reportData(from,to){
   const line=i=>({name:i.name,bud:annual(i)*days/365,act:byCat[i.id]||0});
   return {A:{inc,exp,unc,byCat},tx:L.tx.sort((a,b)=>a.date<b.date?-1:1),meo:L.meo,loading:L.loading,days,
     income:S.budget.income.map(line),groups:S.budget.expenses.map(g=>({group:g.group,items:g.items.map(line)})),
-    noRcpt:L.tx.filter(x=>x.amount<0&&!OUTSIDE.has(x.cat)&&!x.rcpt&&!x.rcptPaper).length,
+    noRcpt:L.tx.filter(x=>x.amount<0&&!OUTSIDE.has(x.cat)&&!hasRcpt(x)).length,
     debtPaidP:S.debts.reduce((s,d)=>s+d.repayments.filter(r=>r.date>=from&&r.date<=to).reduce((a,r)=>a+r.amount,0)+debtTx(d).filter(x=>x.date>=from&&x.date<=to).reduce((a,x)=>a-x.amount,0),0),
     debtLeft:S.debts.reduce((s,d)=>s+Math.max(0,d.amount-debtPaid(d)),0),
     building:buildingEntries().reduce((s,e)=>s+e.amount,0),meorot:meorotLedger().bal};
@@ -832,24 +883,67 @@ async function saveFile(name,blob){
   if(DL){try{await DL.save({filename:name,data:blob})}catch(e){if(!e||e.code!=="declined")alert("לא ניתן להוריד את הקובץ בתצוגה הזו.")}return}
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();
 }
-function csvDownload(name,rows){
-  const csv="﻿"+rows.map(r=>r.map(c=>{c=String(c??"");return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c}).join(",")).join("\r\n");
-  saveFile(name,new Blob([csv],{type:"text/csv;charset=utf-8"}));
-}
 const rangeName=()=>`${grDate(RF.from)} עד ${grDate(RF.to)}`;
-function exportTx(){
-  const R=reportData(RF.from,RF.to),items=allItems();
-  const rows=[["תאריך","תאריך עברי","תיאור","מקור","סעיף","קבוצה","הכנסה","הוצאה","הערה","קבלה"]];
-  R.tx.forEach(x=>{const k=kindOf(x,items),i=items[x.cat]||{};rows.push([grDate(x.date),heDate(x.date,true),x.desc,x.source,catName(x.cat,items)||"לא מסווג",OUTSIDE.has(x.cat)?"קופה נפרדת":i.group||"",k==="income"?x.amount:"",k==="income"?"":-x.amount,x.note,x.rcpt?"צורפה":x.rcptPaper?"בנייר":""])});
-  R.meo.filter(e=>e.type==="received"||e.type==="charge").forEach(e=>rows.push([grDate(e.date),heDate(e.date,true),e.desc,"ארנק המשכיר",catName(e.cat,items),(items[e.cat]||{}).group||"",e.type==="received"?e.amount:"",e.type==="charge"?e.amount:"",e.note||"",""]));
-  csvDownload(`תנועות ${rangeName()}.csv`,rows);
+// ---------- export: every list goes out as Excel or PDF ----------
+const xmenu=(key,label)=>`<details class="xmenu"><summary>⬇ ${esc(label||"ייצוא")}</summary><div class="xm"><button type="button" data-xp="${esc(key)}" data-fmt="xlsx">📊 אקסל</button><button type="button" data-xp="${esc(key)}" data-fmt="pdf">📄 PDF</button></div></details>`;
+const col=(label,num,width)=>({label,num:!!num,width});
+const byDateAsc=(a,b)=>a.date<b.date?-1:a.date>b.date?1:0;
+function txSheet(list,items,title){
+  let inc=0,exp=0;
+  const rows=list.map(x=>{const k=kindOf(x,items),i=items[x.cat]||{},v=Math.abs(x.amount);if(!OUTSIDE.has(x.cat)){if(k==="income")inc+=v;else exp+=v}
+    return [grDate(x.date),heDate(x.date,true),x.desc,x.source,catName(x.cat,items)||"לא מסווג",OUTSIDE.has(x.cat)?"קופה נפרדת":i.group||"",k==="income"?v:null,k==="income"?null:v,x.note||"",x.rcpt?"צורפה":x.rcptPaper?"בנייר":fromNedarim(x)?"בנדרים":""]});
+  return {title:title||"תנועות",cols:[col("תאריך"),col("תאריך עברי"),col("תיאור",0,40),col("מקור"),col("סעיף",0,28),col("קבוצה"),col("הכנסה",1),col("הוצאה",1),col("הערה",0,30),col("קבלה")],rows,total:["סה״כ","","","","","",inc,exp,"",""]};
 }
-function exportSummary(){
-  const R=reportData(RF.from,RF.to),rows=[["קבוצה","סעיף","תקציב לתקופה","בפועל","הפרש"]];
-  R.income.forEach(l=>rows.push(["הכנסות",l.name,Math.round(l.bud),Math.round(l.act),Math.round(l.act-l.bud)]));
-  R.groups.forEach(g=>g.items.forEach(l=>rows.push([g.group,l.name,Math.round(l.bud),Math.round(l.act),Math.round(l.act-l.bud)])));
-  rows.push([],["סה״כ הכנסות","","",Math.round(R.A.inc)],["סה״כ הוצאות","","",Math.round(R.A.exp)],["תוצאה","","",Math.round(R.A.inc-R.A.exp)]);
-  csvDownload(`סיכום לפי סעיפים ${rangeName()}.csv`,rows);
+function stuFiltered(){const q=SF.q.trim(),qn=nrm(q).trim();
+  return stuRows().filter(r=>(SF.act==="all"||(SF.act==="active")===r.act)&&(!q||r.s.name.includes(q)||nrm(r.s.name).includes(qn))&&(SF.shiur==="all"||(r.s.shiur||"")===SF.shiur)&&(SF.f==="all"||(SF.f==="late"?r.bal>0:r.bal<=0)))
+    .sort((a,b)=>(b.act-a.act)||a.s.name.localeCompare(b.s.name,"he"))}
+const EXPORTS={
+  tx:()=>{const items=allItems(),list=S.tx.filter(x=>txMatches(x,items)).sort(byDateAsc);return {title:`תנועות ${YEAR}`,landscape:true,sheets:[txSheet(list,items)]}},
+  budget:()=>{const A=actuals(),line=(g,i)=>[g,i.name,i.monthly==null?null:+i.monthly||0,i.monthly==null?"חד פעמי":i.months,annual(i),A.byCat[i.id]||0];
+    const ex=S.budget.expenses.flatMap(g=>g.items.map(i=>line(g.group,i))),inc=S.budget.income.map(i=>line("הכנסות",i)),B=totals();
+    const cols=[col("קבוצה"),col("סעיף",0,34),col("חודשי",1),col("חודשים"),col("תקציב שנתי",1),col("בפועל מתחילת השנה",1)];
+    return {title:`תקציב ${YEAR}`,sheets:[{title:"הוצאות",cols,rows:ex,total:["סה״כ הוצאות","","","",B.exp,ex.reduce((s,r)=>s+r[5],0)]},{title:"הכנסות",cols,rows:inc,total:["סה״כ הכנסות","","","",B.inc,inc.reduce((s,r)=>s+r[5],0)]}]}},
+  debts:()=>({title:"חובות וגמ״חים",sheets:[{title:"חובות וגמ״חים",cols:[col("שם",0,30),col("דחיפות"),col("סכום",1),col("תשלומים"),col("הוחזר",1),col("נשאר",1),col("תשלום הבא"),col("הערה",0,30)],
+    rows:S.debts.map(d=>{const p=debtPaid(d);return [d.name,URG[d.urgency][0],d.amount,`${d.repayments.length+debtTx(d).length}/${d.payments}`,p,d.amount-p,d.amount>p?grDate(d.next):"נסגר",d.note||""]}),
+    total:["סה״כ","",S.debts.reduce((s,d)=>s+d.amount,0),"",S.debts.reduce((s,d)=>s+debtPaid(d),0),S.debts.reduce((s,d)=>s+d.amount-debtPaid(d),0),"",""]}]}),
+  donors:()=>{const q=DF.q.trim(),list=donorList().filter(d=>(!q||d.name.includes(q)||(d.city||"").includes(q))&&(DF.f==="all"||d.status===DF.f)).sort((a,b)=>b.ytd-a.ytd);
+    return {title:"תורמים",landscape:true,sheets:[{title:"תורמים",cols:[col("תורם",0,28),col("עיר"),col("סוג"),col("דרך"),col("קטגוריה בנדרים",0,24),col("חודשי",1),col("השנה",1),col("תרומה אחרונה"),col("הערה",0,30)],
+      rows:list.map(d=>[d.name,d.city||"",D_STATUS[d.status][0],d.via||"",d.groupe||"",d.monthly||null,d.ytd||0,grDate(d.last),[d.note,d.myNote].filter(Boolean).join(" · ")]),total:["סה״כ","","","","",null,list.reduce((s,d)=>s+(d.ytd||0),0),"",""]}]}},
+  students:()=>{const via=viaIndex(),list=stuFiltered();
+    return {title:`שכר לימוד ${YEAR}`,landscape:true,sheets:[{title:"שכר לימוד",cols:[col("שם",0,24),col("שיעור"),col("פעיל"),col("חודשי",1),col("צריך עד היום",1),col("שולם",1),col("יתרה",1),col("פורים דרכו",1)],
+      rows:list.map(r=>[r.s.name,r.s.shiur||"",r.act?"כן":"לא",r.s.fee||0,r.due,r.paid,r.act?r.bal:null,(via[r.s.id]||[]).reduce((a,x)=>a+x.amount,0)]),
+      total:["סה״כ","","","",list.reduce((s,r)=>s+r.due,0),list.reduce((s,r)=>s+r.paid,0),list.filter(r=>r.act).reduce((s,r)=>s+r.bal,0),null]}]}},
+  studentsFull:()=>{const ay=armyYear(),list=stuRows().sort((a,b)=>(b.act-a.act)||a.s.name.localeCompare(b.s.name,"he"));
+    const cols=[col("שם פרטי"),col("שם משפחה"),col("פעיל"),col("שיעור"),...INFO_F.map(([k,l])=>col(l,0,k==="remark"||k==="street"?24:undefined)),col("תשלום חודשי",1),col("שולם השנה",1),col("יתרה",1),col(`דחיית צבא ${ay}`),col("בתוקף עד"),col("מסמכים",0,30)];
+    return {title:"כל הבחורים – פרטים מלאים",landscape:true,sheets:[{title:"בחורים",cols,rows:list.map(r=>{const I=S.info[r.s.id]||{},a=(I.army||[]).find(x=>String(x.year)===ay);
+      return [r.s.first||r.s.name,r.s.family||"",r.act?"כן":"לא",r.s.shiur||"",...INFO_F.map(([k,,ty])=>ty==="date"?grDate(I[k]):I[k]||""),r.s.fee||0,r.paid,r.act?r.bal:null,a?"יש":"אין",a?grDate(a.until):"",(I.docs||[]).map(d=>d.kind).join(", ")]})}]}},
+  purim:id=>{const s=S.students.find(x=>x.id===id),vl=(viaIndex()[id]||[]).sort(byDateAsc);
+    return {title:`תרומות פורים דרך ${s.name}`,sheets:[{title:"תורמים",cols:[col("תאריך"),col("תורם",0,28),col("טלפון",0,16),col("סכום",1)],
+      rows:vl.map(x=>[grDate(x.date),payerOf(x)||x.desc,(x.nedarim||{}).phone||"",x.amount]),total:[`${vl.length} תרומות`,"","",vl.reduce((a,x)=>a+x.amount,0)]}]}},
+  meorot:()=>{const L=meorotLedger(),items=allItems(),util=k=>{const u=utilStats(k);return {title:UTIL[k],cols:[col("חודש"),col("שילמנו",1),col("חשבון בפועל",1),col("הפרש בחודש",1),col("מצטבר",1)],
+      rows:u.rows.map(r=>[MONTHS[r.i][0],u.fixed,r.b,r.diff,r.cum]),total:["סה״כ",u.pay,u.bill,u.pay-u.bill,null]}};
+    return {title:`המשכיר – התחשבנות ${YEAR}`,sheets:[{title:"ארנק המשכיר",cols:[col("תאריך"),col("תיאור",0,34),col("סוג"),col("סעיף",0,26),col("השפעה",1),col("מאזן",1)],
+      rows:L.rows.map(r=>[grDate(r.date),r.desc,M_TYPES[r.kind][0],r.kind==="rent"?"שכירות מבנה":r.cat?catName(r.cat,items):"",r.eff,r.bal]),total:[L.bal>=0?"המשכיר חייב לנו":"אנחנו חייבים למשכיר","","","",null,L.bal]},util("elec"),util("water")]}},
+  building:()=>{const all=buildingEntries().sort(byDateAsc);return {title:"קרן הבניין",sheets:[{title:"קרן הבניין",cols:[col("תאריך"),col("תיאור",0,36),col("מקור"),col("סכום",1)],
+    rows:all.map(e=>[grDate(e.date),e.desc,e.fromTx?e.src:"ידני",e.amount]),total:["יתרה","","",all.reduce((s,e)=>s+e.amount,0)]}]}},
+  "rep-tx":()=>{const R=reportData(RF.from,RF.to),items=allItems();
+    const meo=R.meo.filter(e=>e.type==="received"||e.type==="charge").map(e=>({date:e.date,desc:e.desc,source:"ארנק המשכיר",cat:e.cat,amount:e.type==="received"?e.amount:-e.amount,note:e.note||"",rcptPaper:false}));
+    return {title:`תנועות ${rangeName()}`,landscape:true,sheets:[txSheet([...R.tx,...meo].sort(byDateAsc),items,"תנועות")]}},
+  "rep-sum":()=>{const R=reportData(RF.from,RF.to),rows=[],add=(g,l)=>rows.push([g,l.name,l.bud,l.act,l.act-l.bud]);
+    R.income.forEach(l=>add("הכנסות",l));R.groups.forEach(g=>g.items.forEach(l=>add(g.group,l)));
+    return {title:`סיכום לפי סעיפים ${rangeName()}`,sheets:[{title:"סיכום לפי סעיפים",cols:[col("קבוצה"),col("סעיף",0,34),col("תקציב לתקופה",1),col("בפועל",1),col("הפרש",1)],rows,total:["תוצאה","הכנסות פחות הוצאות",null,R.A.inc-R.A.exp,null]},
+      {title:"קופות נפרדות",cols:[col("נושא",0,40),col("סכום",1)],rows:[["החזרי חובות וגמ״חים בתקופה",R.debtPaidP],["חובות שנשארו להחזיר",R.debtLeft],["יתרה בקרן הבניין",R.building],[R.meorot>=0?"המשכיר חייב לנו":"אנחנו חייבים למשכיר",Math.abs(R.meorot)]]}]}},
+  compare:()=>{const past=pastYears(),sel=CMP.sel?past.filter(y=>CMP.sel.has(y)):past,mode=CMP.mode,cur=actuals();
+    const curVal=c=>mode==="same"?(cur.byCM[c]||[]).slice(0,DONE||1).reduce((s,x)=>s+x,0):(cur.byCat[c]||0);
+    const rows=[["הכנסות",S.budget.income],...S.budget.expenses.map(g=>[g.group,g.items])].flatMap(([g,items])=>items.map(i=>{const v=sel.map(y=>yearValue(y,i.id,mode)),ok=v.filter(x=>x!=null);
+      return [g,i.name,...v,ok.length?ok.reduce((s,x)=>s+x,0)/ok.length:null,curVal(i.id)]}));
+    return {title:`השוואה בין שנים (${mode==="same"?"אותה תקופה":"שנה מלאה"})`,landscape:true,sheets:[{title:"השוואה",cols:[col("קבוצה"),col("סעיף",0,30),...sel.map(y=>col(String(y),1)),col("ממוצע",1),col(String(YEAR),1)],rows}]}},
+  log:()=>({title:"יומן שינויים",landscape:true,sheets:[{title:"יומן שינויים",cols:[col("מתי"),col("מי"),col("מה השתנה",0,80)],rows:S.log.map(l=>{const d=new Date(l.ts);return [`${grDate(iso(d))} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`,l.name||l.email,l.msg]})}]})
+};
+async function runExport(key,fmt){
+  const i=key.indexOf(":"),rep=EXPORTS[i<0?key:key.slice(0,i)](i<0?undefined:key.slice(i+1));
+  rep.subtitle=rep.subtitle||`${BRAND.name} · ${BRAND.org}`;rep.logo=new URL(BRAND.logo,location.href).href;
+  if(fmt==="pdf")toPDF(rep);else await saveFile(rep.title.replace(/[\\/:*?"<>|]/g,"-")+".xlsx",await toExcel(rep));
 }
 function viewReports(){
   const R=reportData(RF.from,RF.to),A=R.A;
@@ -863,7 +957,7 @@ function viewReports(){
     <div class="filters">
       <label class="rng">מתאריך <input type="date" id="rFrom" value="${RF.from}"></label><label class="rng">עד תאריך <input type="date" id="rTo" value="${RF.to}"></label>
       ${qs.map(([f,t,l])=>`${q(f,t)}${l}</button>`).join("")}</div>
-    <div class="filters"><button data-rep="print">🖨 הדפסה / שמירה כ־PDF</button><button data-rep="tx">⬇ אקסל: כל התנועות</button><button data-rep="sum">⬇ אקסל: סיכום לפי סעיפים</button></div>
+    <div class="filters xbar"><button data-rep="print">🖨 הדפסת הדוח המלא / PDF</button>${xmenu("rep-sum","סיכום לפי סעיפים")}${xmenu("rep-tx","כל התנועות בתקופה")}</div>
     ${R.loading?'<p class="hint">טוען את התנועות של התקופה…</p>':""}</section>
   <section class="sheet" id="report">
     <div class="report-head"><img src="${BRAND.logo}" alt=""><div><h2 style="color:var(--brown)">${esc(BRAND.name)} – דוח כספי</h2><div class="hint">${esc(BRAND.org)} · ${rangeName()} · הופק ב־${grDate(iso(TODAY))}</div></div></div>
@@ -902,7 +996,7 @@ function viewCompare(){
       <td class="n num"><b>${a!=null?ils(a):"—"}</b></td><td class="n num">${ils(b)}</td><td>${a!=null?chg(a,b,goodUp):""}</td></tr>`};
   const body=[["הכנסות",S.budget.income,true],...S.budget.expenses.map(g=>[g.group,g.items,false])].map(([name,items,goodUp])=>{const k="c:"+name,ids=items.map(i=>i.id);
     return grpHead(k,name,ids.reduce((s,c)=>s+curVal(c),0),items.length,cols)+(closed.has(k)?"":items.map(i=>row(i.name,[i.id],goodUp)).join("")+row("סה״כ "+name,ids,goodUp,"total"))}).join("");
-  return `<section class="sheet no-print"><div class="sheet-head"><h2>השוואה בין שנים</h2></div>
+  return `<section class="sheet no-print"><div class="sheet-head"><h2>השוואה בין שנים</h2>${past.length?xmenu("compare"):""}</div>
     ${past.length?`<div class="filters"><span class="hint">שנים להשוואה:</span>${past.map(y=>`<button data-cmpy="${y}" aria-pressed="${sel.includes(y)}">${y}${manual(y)?" (ידני)":""}</button>`).join("")}
       <span class="sep"></span><button data-cmpmode="same" aria-pressed="${mode==="same"}">אותה תקופה (ינואר–${MONTHS[Math.max(0,(DONE||1)-1)][0]})</button><button data-cmpmode="full" aria-pressed="${mode==="full"}">שנה מלאה</button></div>
     <div class="tbl-wrap"><table class="cmp"><thead><tr><th>סעיף</th>${sel.map(y=>`<th class="n">${y}</th>`).join("")}<th class="n">ממוצע ${sel.length>1?sel.length+" השנים":""}</th><th class="n">${YEAR}${mode==="full"&&TODAY<YEAR_END?" (עד היום)":""}</th><th></th></tr></thead><tbody>${body}</tbody></table></div>
@@ -914,7 +1008,7 @@ function viewCompare(){
 }
 
 // ---------- settings ----------
-let syncBusy=false,syncMsg="";
+let syncBusy=false,syncMsg="";const undone=new Set();
 function nedarimBox(ed,fmtTs){
   const s=S.sync,r=s&&s.lastResult,errs=r&&r.errors&&r.errors.length?r.errors:null;
   const chip=!s?'<span class="chip warn">ממתין להפעלה</span>':errs?'<span class="chip bad">יש בעיה</span>':'<span class="chip good">מחובר</span>';
@@ -956,9 +1050,11 @@ function viewSettings(){
     <div class="tbl-wrap"><table><thead><tr><th>מתי</th><th>מי</th><th>מסך</th><th>שאלה</th><th>קבצים</th><th>מייל</th></tr></thead><tbody>
     ${qs.map(x=>`<tr><td><span class="num">${fmtTs(x.ts)}</span></td><td>${esc(x.name||x.email)}</td><td>${esc(x.page)}</td><td style="white-space:pre-wrap">${esc(x.text)}</td><td>${(x.files||[]).length}</td><td>${x.emailed?'<span class="chip good">נשלח</span>':x.emailError?`<span class="chip warn" title="${esc(x.emailError)}">לא נשלח</span>`:'<span class="chip neutral">ממתין</span>'}</td></tr>`).join("")}
     </tbody></table></div></section>`:""}
-  <section class="sheet"><div class="sheet-head"><h2>יומן שינויים</h2><span class="hint">כל שינוי נרשם: מי, מה ומתי</span></div>
-    <div class="tbl-wrap"><table><thead><tr><th>מתי</th><th>מי</th><th>מה השתנה</th></tr></thead><tbody>
-    ${S.log.map(l=>`<tr><td><span class="num">${fmtTs(l.ts)}</span></td><td>${esc(l.name||l.email)}</td><td>${esc(l.msg)}</td></tr>`).join("")||`<tr><td colspan="3" class="muted">עדיין לא בוצעו שינויים.</td></tr>`}
+  <section class="sheet"><div class="sheet-head"><h2>יומן שינויים</h2><span class="hint">כל שינוי נרשם: מי, מה ומתי</span>${xmenu("log")}</div>
+    ${ed&&W.undo?`<p class="hint" style="margin-top:0">אפשר לבטל שינוי עד ${W.undoDays} ימים אחרי שנעשה: לוחצים "↶ ביטול" בשורה שלו, והפרטים חוזרים למה שהיו לפניו. גם את הביטול אפשר לבטל.</p>`:""}
+    <div class="tbl-wrap"><table><thead><tr><th>מתי</th><th>מי</th><th>מה השתנה</th>${ed?"<th></th>":""}</tr></thead><tbody>
+    ${S.log.map(l=>{const canUndo=ed&&W.undo&&l.undo&&!undone.has(l.id)&&Date.now()-new Date(l.ts)<W.undoDays*864e5;
+      return `<tr><td><span class="num">${fmtTs(l.ts)}</span></td><td>${esc(l.name||l.email)}</td><td>${esc(l.msg)}${undone.has(l.id)?' <span class="chip neutral">בוטל</span>':""}</td>${ed?`<td>${canUndo?`<button class="btn ghost small" data-undo="${esc(l.id)}">↶ ביטול</button>`:""}</td>`:""}</tr>`}).join("")||`<tr><td colspan="4" class="muted">עדיין לא בוצעו שינויים.</td></tr>`}
     </tbody></table></div>
     ${S.logMore?`<p style="text-align:center"><button class="btn ghost" data-act="morelog">טעינת עוד 50</button></p>`:""}</section>`;
 }
@@ -1096,6 +1192,7 @@ const groupOf=id=>S.budget.expenses.find(g=>g.items.some(i=>i.id===id));
 // changes: "meta" (budget/settings of the year), [collection, object] to save, [collection, id, "del"] to delete
 const commit=(msg,...changes)=>{
   if(!can().edit)return;
+  if(W.begin)W.begin();
   const seen=new Set();
   changes.forEach(c=>{const k=c==="meta"?"meta":c[0]+"/"+(c[2]==="del"?c[1]:c[1].id);if(seen.has(k))return;seen.add(k);c==="meta"?W.meta():c[2]==="del"?W.del(c[0],c[1]):W.put(c[0],c[1])});
   if(msg)W.log(msg);
@@ -1161,6 +1258,106 @@ function applyImport(){
   SF.act="all";render();
   setTimeout(()=>alert(`הייבוא הסתיים: ${added} חדשים, ${updated} עודכנו.${r.n?`\nשויכו לפי שם ${r.n} תשלומי שכר לימוד.`:""}`),50);
 }
+
+// ---------- import from Excel: choose the file, match its columns, check, import ----------
+const MONTH_IX=t=>{const s=String(t??"").trim();if(!s)return -1;const n=+s;if(Number.isInteger(n)&&n>=1&&n<=12)return n-1;
+  const d=parseDate(t);if(d)return +d.slice(0,4)===YEAR?+d.slice(5,7)-1:-2;
+  const m=s.match(/^(\d{1,2})[\/.\-](\d{4})$/);if(m)return +m[2]===YEAR&&+m[1]>=1&&+m[1]<=12?+m[1]-1:-2;
+  return MONTHS.findIndex(([n])=>s.includes(n))};
+const IMPORTS={
+  tx:{title:"ייבוא תנועות מאקסל",hint:"למשל דף חשבון שהורד מאתר הבנק. אפשר עמודת סכום אחת (פלוס = נכנס, מינוס = יצא), או עמודות זכות וחובה נפרדות. תנועה שכבר קיימת (אותו תאריך, סכום ותיאור) לא תיכנס פעמיים.",
+    fields:[{k:"date",label:"תאריך",req:1,hints:["תאריך","תאריך ערך","date"]},{k:"desc",label:"תיאור",req:1,hints:["תיאור","תאור","פרטים","הפעולה","סוג פעולה","פירוט","שם"]},
+      {k:"amount",label:"סכום (פלוס = נכנס, מינוס = יצא)",hints:["סכום","amount"]},{k:"credit",label:"זכות – נכנס",hints:["זכות","בזכות","credit"]},{k:"debit",label:"חובה – יצא",hints:["חובה","בחובה","debit"]},{k:"note",label:"הערה / אסמכתא",hints:["אסמכתא","הערה","הערות"]}],
+    opts:()=>`<label for="impSrc">מקור<select id="impSrc">${SOURCES.map(s=>`<option>${s}</option>`).join("")}</select></label><label class="check"><input type="checkbox" id="impRules" checked> לסווג לפי כללי הסיווג</label>`,
+    parse:g=>{const date=parseDate(g("date")),desc=cellText(g("desc"));let a=null;
+      if(IMP.map.amount!=null)a=parseAmount(g("amount"));else{const c=parseAmount(g("credit")),d=parseAmount(g("debit"));if(c!=null||d!=null)a=(c||0)-Math.abs(d||0)}
+      if(!date)return {err:"אין תאריך"};if(!a)return {err:"אין סכום"};if(!desc)return {err:"אין תיאור"};
+      return {date,desc,amount:Math.round(a*100)/100,note:cellText(g("note"))}},
+    show:o=>[grDate(o.date),o.desc,ils(o.amount)],head:["תאריך","תיאור","סכום"],
+    apply:rows=>{const src=document.getElementById("impSrc").value,rules=document.getElementById("impRules").checked,key=x=>`${x.date}|${Math.round(x.amount*100)}|${nrm(x.desc)}`;
+      const have=new Set(S.tx.map(key)),ch=[];let dup=0;
+      rows.forEach(o=>{if(have.has(key(o))){dup++;return}have.add(key(o));const x={id:uid(),...o,source:src,cat:""};if(rules)x.cat=classify(x);S.tx.push(x);ch.push(["tx",x])});
+      return {ch,msg:`תנועות: יובאו מאקסל ${ch.length} תנועות (${src})`,done:`נכנסו ${ch.length} תנועות.${dup?` ${dup} דולגו כי כבר קיימות.`:""}`}}},
+  debts:{title:"ייבוא חובות וגמ״חים מאקסל",hint:"כל שורה היא חוב. חובה: שם וסכום. דחיפות: \"דחוף\", \"בינוני\" או \"רגיל\".",
+    fields:[{k:"name",label:"שם הגמ״ח / המלווה",req:1,hints:["שם","גמח","מלווה","גוף"]},{k:"amount",label:"סכום החוב",req:1,hints:["סכום","חוב","יתרה"]},{k:"payments",label:"מספר תשלומים",hints:["תשלומים","מספר תשלומים"]},
+      {k:"next",label:"תשלום הבא",hints:["תשלום הבא","תאריך","מועד"]},{k:"urgency",label:"דחיפות",hints:["דחיפות","דחוף"]},{k:"note",label:"הערה",hints:["הערה","הערות"]}],
+    parse:g=>{const name=cellText(g("name")),amount=Math.abs(parseAmount(g("amount"))||0);if(!name)return {err:"אין שם"};if(!amount)return {err:"אין סכום"};
+      const u=cellText(g("urgency"));return {name,amount,payments:Math.max(1,Math.round(parseAmount(g("payments"))||1)),next:parseDate(g("next"))||iso(TODAY),urgency:/דחוף|גבוה/.test(u)?"high":/רגיל|נמוך/.test(u)?"low":"mid",note:cellText(g("note"))}},
+    show:o=>[o.name,ils(o.amount),o.payments,grDate(o.next),URG[o.urgency][0]],head:["שם","סכום","תשלומים","תשלום הבא","דחיפות"],
+    apply:rows=>{const ch=rows.map(o=>{const d={id:uid(),...o,repayments:[]};S.debts.push(d);return ["debts",d]});return {ch,msg:`חובות: יובאו מאקסל ${ch.length} חובות`,done:`נכנסו ${ch.length} חובות.`}}},
+  stupay:{title:"ייבוא תשלומי שכר לימוד מאקסל",hint:"לתשלומים שלא עברו בנדרים או בבנק (למשל מזומן ושיקים). הבחור מזוהה לפי השם או לפי מספר הזהות.",
+    fields:[{k:"name",label:"שם הבחור",hints:["שם","בחור","תלמיד","שם מלא"]},{k:"zeout",label:"מספר זהות",hints:["זהות","ת.ז","תז"]},{k:"date",label:"תאריך",req:1,hints:["תאריך"]},
+      {k:"amount",label:"סכום",req:1,hints:["סכום","שולם"]},{k:"method",label:"איך שולם",hints:["אמצעי","איך","אופן","תשלום"]},{k:"note",label:"הערה",hints:["הערה","הערות"]}],
+    parse:g=>{const date=parseDate(g("date")),amount=Math.abs(parseAmount(g("amount"))||0),z=cellText(g("zeout")).replace(/\D/g,""),name=cellText(g("name"));
+      if(!date)return {err:"אין תאריך"};if(!amount)return {err:"אין סכום"};
+      let s=z?S.students.find(x=>((S.info||{})[x.id]||{}).zeout&&S.info[x.id].zeout.replace(/^0+/,"")===z.replace(/^0+/,"")):null;
+      if(!s&&name){s=S.students.find(x=>nrm(x.name)===nrm(name))||nameIndex().own(name)}
+      if(!s)return {err:`לא נמצא בחור${name?` "${name}"`:""}`};
+      const m=cellText(g("method"));return {s,date,amount,method:METHODS.find(x=>m&&(x.includes(m)||m.includes(x)))||m||"מזומן",note:cellText(g("note"))}},
+    show:o=>[o.s.name,grDate(o.date),ils(o.amount),o.method],head:["בחור","תאריך","סכום","איך שולם"],
+    apply:rows=>{const ch=[];rows.forEach(o=>{o.s.payments.push({id:uid(),date:o.date,amount:o.amount,method:o.method,note:o.note});ch.push(["students",o.s])});
+      return {ch,msg:`שכר לימוד: יובאו מאקסל ${rows.length} תשלומים`,done:`נכנסו ${rows.length} תשלומים.`}}},
+  meo:{title:"ייבוא תנועות בארנק המשכיר מאקסל",hint:"למשל דתות שהמשכיר קיבל עבורנו. אם יש עמודת סוג, המילים \"קיבלו\"/\"דתות\", \"חיוב\", \"שילמנו\", \"העבירו\" מזוהות. אחרת כל השורות מקבלות את הסוג שנבחר כאן.",
+    fields:[{k:"date",label:"תאריך",req:1,hints:["תאריך","חודש"]},{k:"desc",label:"תיאור",req:1,hints:["תיאור","פרטים","תאור"]},{k:"amount",label:"סכום",req:1,hints:["סכום"]},{k:"type",label:"סוג (לא חובה)",hints:["סוג"]}],
+    opts:()=>`<label for="impType">סוג ברירת מחדל<select id="impType"><option value="received">המשכיר קיבל עבורנו (הכנסה)</option><option value="charge">חיוב נוסף מהמשכיר (הוצאה)</option><option value="paid_to">שילמנו למשכיר</option><option value="paid_from">המשכיר העביר לנו</option></select></label>
+      <label for="impCat">סעיף בתקציב (להכנסה / לחיוב)<select id="impCat">${catOptions("i_dat_b",null,true)}</select></label>`,
+    parse:g=>{const date=parseDate(g("date")),desc=cellText(g("desc")),amount=Math.abs(parseAmount(g("amount"))||0),t=cellText(g("type"));
+      if(!date)return {err:"אין תאריך"};if(!amount)return {err:"אין סכום"};
+      return {date,desc:desc||"מהמשכיר",amount,type:/קיבל|דת/.test(t)?"received":/חיוב/.test(t)?"charge":/שילמנו/.test(t)?"paid_to":/העביר/.test(t)?"paid_from":""}},
+    show:o=>[grDate(o.date),o.desc,ils(o.amount),o.type?M_TYPES[o.type][0]:"(ברירת מחדל)"],head:["תאריך","תיאור","סכום","סוג"],
+    apply:rows=>{const def=document.getElementById("impType").value,cat=document.getElementById("impCat").value;
+      const ch=rows.map(o=>{const ty=o.type||def,m={id:uid(),date:o.date,type:ty,desc:o.desc,amount:o.amount,cat:ty==="received"||ty==="charge"?cat:"",note:""};S.meorot.entries.push(m);return ["meorot",m]});
+      return {ch,msg:`המשכיר: יובאו מאקסל ${ch.length} תנועות`,done:`נכנסו ${ch.length} תנועות לארנק המשכיר.`}}},
+  bills:{title:"ייבוא חשבונות חשמל ומים מאקסל",hint:`שורה לכל חודש של ${YEAR}: עמודת חודש (מספר, שם חודש או תאריך), ועמודות של חשבון החשמל ו/או המים. חשבון שכבר הוזן יוחלף.`,
+    fields:[{k:"month",label:"חודש",req:1,hints:["חודש","תאריך","תקופה"]},{k:"elec",label:"חשבון חשמל",hints:["חשמל"]},{k:"water",label:"חשבון מים",hints:["מים"]}],
+    parse:g=>{const i=MONTH_IX(g("month")),e=parseAmount(g("elec")),w=parseAmount(g("water"));
+      if(i===-2)return {err:`לא שנת ${YEAR}`};if(i<0)return {err:"חודש לא מזוהה"};if(e==null&&w==null)return {err:"אין סכום"};return {i,e:e==null?null:Math.abs(e),w:w==null?null:Math.abs(w)}},
+    show:o=>[MONTHS[o.i][0],o.e!=null?ils(o.e):"—",o.w!=null?ils(o.w):"—"],head:["חודש","חשמל","מים"],
+    apply:rows=>{rows.forEach(o=>{const b=S.meorot.bills[o.i]=S.meorot.bills[o.i]||{};if(o.e!=null)b.elec=o.e;if(o.w!=null)b.water=o.w});
+      return {ch:["meta"],msg:`המשכיר: יובאו מאקסל חשבונות חשמל ומים ל־${rows.length} חודשים`,done:`עודכנו ${rows.length} חודשים.`}}}
+};
+let IMP=null;
+function openImport(key){IMP={key,sheets:null,si:0,hi:0,map:{}};impRender()}
+function impParsed(){
+  const D=IMPORTS[IMP.key],rows=IMP.sheets[IMP.si].rows.slice(IMP.hi+1);
+  return rows.map((r,n)=>{const g=k=>IMP.map[k]==null?null:r[IMP.map[k]];const o=D.parse(g);return {...o,line:IMP.hi+2+n}});
+}
+function impRender(){
+  const D=IMPORTS[IMP.key];
+  if(!IMP.sheets){showViewer(`<div class="impwiz"><h2>${esc(D.title)}</h2><p class="hint">${esc(D.hint)}</p>
+    <label class="btn">בחירת קובץ אקסל<input type="file" accept=".xlsx" data-impfile hidden></label><p class="hint">קובץ xlsx. אם יש רק xls ישן או csv – פותחים באקסל ושומרים בשם כ־xlsx.</p></div>`);return}
+  const sh=IMP.sheets[IMP.si],head=(sh.rows[IMP.hi]||[]).map(cellText),width=Math.max(...sh.rows.slice(0,40).map(r=>r.length));
+  const colName=k=>`${String.fromCharCode(1488+Math.min(k,21))}${k>21?k:""}`;
+  const opt=k=>`<option value="">— אין —</option>${Array.from({length:width},(_,i)=>`<option value="${i}"${IMP.map[k]===i?" selected":""}>${esc(head[i]||"עמודה "+(i+1))}</option>`).join("")}`;
+  const P=impParsed(),ok=P.filter(o=>!o.err),bad=P.filter(o=>o.err);
+  const miss=D.fields.filter(f=>f.req&&IMP.map[f.k]==null);
+  showViewer(`<div class="impwiz"><h2>${esc(D.title)}</h2>
+    <div class="form">
+      ${IMP.sheets.length>1?`<label for="impSheet">גיליון<select id="impSheet">${IMP.sheets.map((x,i)=>`<option value="${i}"${i===IMP.si?" selected":""}>${esc(x.name)}</option>`).join("")}</select></label>`:""}
+      <label for="impHead">שורת הכותרות<select id="impHead">${sh.rows.slice(0,15).map((r,i)=>`<option value="${i}"${i===IMP.hi?" selected":""}>שורה ${i+1}: ${esc(r.map(cellText).filter(Boolean).slice(0,4).join(" · ").slice(0,60))}</option>`).join("")}</select></label>
+      ${D.opts?D.opts():""}
+    </div>
+    <h3>איזו עמודה היא מה</h3><p class="hint" style="margin-top:0">המערכת ניחשה לפי הכותרות. אפשר לתקן.</p>
+    <div class="form impmap">${D.fields.map(f=>`<label>${esc(f.label)}${f.req?" *":""}<select data-impmap="${f.k}">${opt(f.k)}</select></label>`).join("")}</div>
+    ${miss.length?`<p class="err">חסרה עמודה: ${miss.map(f=>esc(f.label)).join(", ")}</p>`:`
+    <h3>בדיקה: ${ok.length} שורות תקינות${bad.length?` · ${bad.length} ידלגו`:""}</h3>
+    <div class="tbl-wrap"><table><thead><tr><th>שורה</th>${D.head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>
+      ${P.slice(0,12).map(o=>o.err?`<tr class="skip"><td class="num">${o.line}</td><td colspan="${D.head.length}">✗ ${esc(o.err)}</td></tr>`:`<tr><td class="num">${o.line}</td>${D.show(o).map(v=>`<td>${esc(v)}</td>`).join("")}</tr>`).join("")}
+    </tbody></table></div>${P.length>12?`<p class="hint">מוצגות 12 השורות הראשונות מתוך ${P.length}.</p>`:""}
+    ${bad.length?`<details class="hint"><summary>למה ${bad.length} שורות ידלגו</summary>${bad.slice(0,40).map(o=>`שורה ${o.line}: ${esc(o.err)}`).join("<br>")}</details>`:""}
+    <p><button class="btn" type="button" data-impgo${ok.length?"":" disabled"}>ייבוא ${ok.length} שורות</button></p>`}</div>`);
+}
+const vbody=document.getElementById("vbody");
+vbody.addEventListener("change",async e=>{const t=e.target;if(!IMP)return;
+  if(t.hasAttribute("data-impfile")&&t.files[0]){try{const sh=await readSheets(t.files[0]);if(!sh.length){alert("הקובץ ריק.");return}
+      const D=IMPORTS[IMP.key];IMP.sheets=sh;IMP.si=0;IMP.hi=findHeader(sh[0].rows,D.fields);IMP.map=guessMap(sh[0].rows[IMP.hi].map(cellText),D.fields);impRender()}
+    catch(err){console.error(err);alert("לא הצלחתי לקרוא את הקובץ. צריך קובץ אקסל בפורמט xlsx.")}}
+  else if(t.id==="impSheet"){const D=IMPORTS[IMP.key];IMP.si=+t.value;const rows=IMP.sheets[IMP.si].rows;IMP.hi=findHeader(rows,D.fields);IMP.map=guessMap(rows[IMP.hi].map(cellText),D.fields);impRender()}
+  else if(t.id==="impHead"){const D=IMPORTS[IMP.key];IMP.hi=+t.value;IMP.map=guessMap(IMP.sheets[IMP.si].rows[IMP.hi].map(cellText),D.fields);impRender()}
+  else if(t.dataset.impmap){IMP.map[t.dataset.impmap]=t.value===""?undefined:+t.value;impRender()}});
+vbody.addEventListener("click",e=>{if(!IMP||!e.target.closest("[data-impgo]"))return;
+  const D=IMPORTS[IMP.key],rows=impParsed().filter(o=>!o.err),r=D.apply(rows);IMP=null;document.getElementById("viewer").hidden=true;
+  commit(r.msg,...r.ch);setTimeout(()=>alert("הייבוא הסתיים. "+r.done),50)});
 // classification: the yeshiva's rules, then donations named after a bachur / rav (the Purim campaign)
 function classify(x){
   const r=S.rules.find(r=>r.kw&&(x.desc||"").includes(r.kw));if(r)return r.cat;
@@ -1241,6 +1438,19 @@ app.addEventListener("click",e=>{
     const I=S.info&&S.info[s.id];if(I){[I.photo,...(I.docs||[]).map(x=>x.path)].filter(Boolean).forEach(p=>W.delFile(p));delete S.info[s.id];ch.push(["studentInfo",s.id,"del"])}
     commit(`שכר לימוד: ${s.name} נמחק מהמערכת`,["students",s.id,"del"],...ch)}
   else if(d.sactF){SF.act=d.sactF;render()}
+  else if(d.nottuit){const x=S.tx.find(y=>y.id===d.nottuit),n=x.nedarim||{},k=n.kevaId,who=payerOf(x)||x.desc;
+    // a standing order: every payment of it, and its future ones (the sync reads forceDonor)
+    const same=k?S.tx.filter(y=>y.nedarim&&y.nedarim.kevaId===k&&y.nedarim.type===n.type):[x],dn=k&&S.donors.find(o=>o.id===(n.type==="masav"?"m_":"k_")+k);
+    if(!confirm(`לסמן ש"${who}" אינו שכר לימוד?${same.length>1?`
+${same.length} התשלומים של הוראת הקבע הזו`:""} יעברו לתרומות שוטפות, וגם התשלומים הבאים שלה.`))return;
+    const don=S.budget.income.some(i=>i.id==="i_don")?"i_don":"",ch=same.map(y=>{y.notTuition=true;y.studentId=null;if(!y.cat||y.cat==="i_parents")y.cat=don;return ["tx",y]});
+    if(dn){dn.forceDonor=true;ch.push(["donors",dn])}
+    S.students.forEach(st=>{if((st.payers||[]).includes(n.client)){st.payers=st.payers.filter(p=>p!==n.client);ch.push(["students",st])}});
+    commit(`שכר לימוד: "${who}" סומן שאינו שכר לימוד – ${same.length} תשלומים עברו לתרומות`,...ch)}
+  else if(d.sarmy){const[sid,id]=d.sarmy.split(":"),a=(S.info[sid].army||[]).find(x=>x.id===id),w=open("","_blank");
+    W.fileUrl(a.path).then(u=>{if(w)w.location=u;else location.href=u},()=>{if(w)w.close();alert("לא הצלחתי לפתוח את הקובץ.")})}
+  else if(d.delarmy){const[sid,id]=d.delarmy.split(":"),I=S.info[sid],a=I.army.find(x=>x.id===id),st=S.students.find(y=>y.id===sid);if(!confirm(`למחוק את הדחייה של ${a.year}?`))return;
+    I.army=I.army.filter(x=>x.id!==id);if(a.path)W.delFile(a.path);commit(`תלמידים: נמחקה דחיית הצבא של ${st.name} לשנת ${a.year}`,["studentInfo",{id:sid,...I}])}
   else if(d.sact){const s=S.students.find(x=>x.id===d.sact);s.active=!isActive(s);commit(`שכר לימוד: ${s.name} – ${s.active?"חזר לפעילים":"הועבר ללא פעילים"}`,["students",s])}
   else if(t.hasAttribute("data-morevia")){viaShown+=50;render()}
   else if(t.hasAttribute("data-autolink")){const r=autoLinkStudents();if(!r.n){alert("לא נמצאו תשלומים חדשים שאפשר לשייך לפי שם.");return}
@@ -1251,7 +1461,13 @@ app.addEventListener("click",e=>{
     I.docs=I.docs.filter(y=>y.id!==id);W.delFile(x.path);commit(`תלמידים: נמחק המסמך "${x.name}" של ${s.name}`,["studentInfo",{id:sid,...I}])}
   else if(d.handled){const dn=S.donors.find(x=>x.id===d.handled);dn.handled=true;commit(`תורמים: ${dn.name} – סומן שטופל`,["donors",dn])}
   else if(d.bulkdonor){if(d.bulkdonor==="none"){selDonors.clear();render();return}const ds=S.donors.filter(x=>selDonors.has(x.id));ds.forEach(x=>x.handled=true);selDonors.clear();commit(`תורמים: ${ds.length} סומנו שטופלו`,...ds.map(x=>["donors",x]))}
-  else if(d.rep){if(d.rep==="print")print();else if(d.rep==="tx")exportTx();else exportSummary()}
+  else if(d.rep==="print")print();
+  else if(d.undo){const l=S.log.find(x=>x.id===d.undo);
+    if(!confirm(`לבטל את השינוי?\n"${l.msg}"\n\nהפרטים שהשינוי נגע בהם יחזרו למה שהיו לפניו. אם מישהו שינה אותם שוב אחר כך, גם השינוי המאוחר יותר יבוטל.`))return;
+    t.disabled=true;W.undo(l.id).then(r=>{if(r.gone){alert("כבר לא ניתן לבטל את השינוי הזה.");return}if(r.already){undone.add(l.id);render();alert("השינוי הזה כבר בוטל.");return}
+      undone.add(l.id);W.log(`ביטול: ${r.msg}`);render()}).catch(e=>{console.error(e);alert("הביטול נכשל: "+(e.code==="permission-denied"?"אין הרשאה.":"בעיה בחיבור."))}).finally(()=>{t.disabled=false})}
+  else if(d.xp){const m=t.closest("details");if(m)m.open=false;runExport(d.xp,d.fmt).catch(e=>{console.error(e);alert("הייצוא נכשל: "+(e.message||e))})}
+  else if(d.imp)openImport(d.imp);
   else if(d.deluser){const u=S.users.find(x=>x.id===d.deluser);if(!confirm(`להסיר את ${u.name}?`))return;S.users=S.users.filter(x=>x.id!==u.id);commit(`משתמשים: ${u.name} (${u.id}) הוסר`,["roles",u.id,"del"])}
 });
 function applySug(i,avg){const g=groupOf(i.id);
@@ -1276,7 +1492,7 @@ app.addEventListener("change",e=>{
   else if(d.seltx){t.checked?selTx.add(d.seltx):selTx.delete(d.seltx);render()}
   else if(t.hasAttribute("data-selall")){const items=allItems(),list=S.tx.filter(x=>txMatches(x,items));list.forEach(x=>t.checked?selTx.add(x.id):selTx.delete(x.id));render()}
   else if(d.seldonor){t.checked?selDonors.add(d.seldonor):selDonors.delete(d.seldonor);render()}
-  else if(t.hasAttribute("data-selalldonors")){S.donors.filter(x=>DF.f==="all"||x.status===DF.f).forEach(x=>t.checked?selDonors.add(x.id):selDonors.delete(x.id));render()}
+  else if(t.hasAttribute("data-selalldonors")){donorList().filter(x=>DF.f==="all"||x.status===DF.f).forEach(x=>t.checked?selDonors.add(x.id):selDonors.delete(x.id));render()}
   else if(d.bill){const[i,k]=d.bill.split(":");(S.meorot.bills[i]=S.meorot.bills[i]||{})[k]=t.value===""?null:+t.value;commit(`המשכיר: חשבון ${UTIL[k]} ל${MONTHS[i][0]} – ${t.value===""?"נמחק":ils(+t.value)}`,"meta")}
   else if(d.fixed){S.meorot.fixed[d.fixed]=+t.value||0;commit(`המשכיר: תשלום קבוע ל${UTIL[d.fixed]} – ${ils(+t.value||0)}`,"meta")}
   else if(t.hasAttribute("data-rent")){S.meorot.rent=+t.value||0;commit(`המשכיר: שכירות חודשית – ${ils(S.meorot.rent)}`,"meta")}
@@ -1295,6 +1511,7 @@ app.addEventListener("change",e=>{
     const id=uid(),path=`students/${s.id}/${id}-${f.name.replace(/[\/\\#?]/g,"_")}`;upBusy=s.id;render();
     (f.type.startsWith("image/")?shrink(f,1800,.8):Promise.resolve(f)).then(b=>W.upload(path,b)).then(()=>{I.docs=[...(I.docs||[]),{id,name:f.name,kind,path,type:f.type,date:iso(TODAY)}];S.info[s.id]=I;
       commit(`תלמידים: צורף "${kind}" ל${s.name}`,["studentInfo",{id:s.id,...I}])}).catch(()=>alert("לא הצלחתי להעלות את הקובץ.")).finally(()=>{upBusy=null;render()})}
+  else if(d.armyfile&&t.files[0]){const[sid,id]=d.armyfile.split(":");armyUpload(sid,id,t.files[0])}
   else if(t.hasAttribute("data-simport")&&t.files[0]){readStudents(t.files[0]).then(previewImport,e=>{console.error(e);alert("לא הצלחתי לקרוא את הקובץ. צריך קובץ אקסל (xlsx) עם עמודות משפחה, פרטי ומס' זהות.")})}
   else if(d.rcpt&&t.files[0]){const x=S.tx.find(x=>x.id===d.rcpt);readReceipt(t.files[0])
     .then(rc=>W.putReceipt(x.id,rc).then(()=>{x.rcpt={name:rc.name,type:rc.type};commit(`תנועות: צורפה קבלה ל"${x.desc}"`,["tx",x])}))
@@ -1328,6 +1545,9 @@ app.addEventListener("submit",e=>{
     const nd=new Date(db.next+"T12:00:00");nd.setMonth(nd.getMonth()+1);db.next=iso(nd);ch=[["debts",db]];msg=`חובות: נרשם החזר של ${ils(+v("rpAmt-"+id))} ל"${db.name}"`}
   else if(f.id==="bForm"){const a=+v("bAmt"),b={id:uid(),date:v("bDate"),desc:v("bDesc"),amount:v("bKind")==="in"?a:-a,note:""};S.building.entries.push(b);ch=[["building",b]];msg=`קרן הבניין: נוסף "${b.desc}" – ${ils(a)}`}
   else if(f.id==="ruleForm"){S.rules.push({kw:v("rKw"),cat:v("rCat")});ch=["meta"];msg=`כללי סיווג: נוסף הכלל "${v("rKw")}"`}
+  else if(f.dataset.armyadd){const sid=f.dataset.armyadd,I=S.info[sid]||{},st=S.students.find(x=>x.id===sid),year=v("arYear-"+sid).trim(),file=document.getElementById("arFile-"+sid).files[0];
+    const a={id:uid(),year,until:v("arUntil-"+sid),note:v("arNote-"+sid).trim(),path:"",name:""};I.army=[...(I.army||[]),a];S.info[sid]=I;
+    commit(`תלמידים: נוספה דחיית צבא ל${st.name} לשנת ${year}`,["studentInfo",{id:sid,...I}]);if(file)armyUpload(sid,a.id,file);return}
   else if(f.dataset.sinfo){const id=f.dataset.sinfo,s=S.students.find(x=>x.id===id),I=S.info[id]||{};
     s.first=v("sfFirst-"+id).trim();s.family=v("sfFamily-"+id).trim();s.name=`${s.first} ${s.family}`.trim()||s.name;s.aliases=v("sfAli-"+id).trim();
     INFO_F.forEach(([k])=>{I[k]=v(`sf${k}-${id}`).trim()});S.info[id]=I;ch=[["students",s],["studentInfo",{id,...I}]];msg=`תלמידים: עודכנו הפרטים של ${s.name}`}

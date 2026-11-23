@@ -32,6 +32,12 @@ service cloud.firestore {
     match /studentInfo/{id} {
       allow read, write: if editor();
     }
+    // what each change looked like before it, for undo (deleted automatically after 180 days by a TTL policy on expireAt)
+    match /undo/{id} {
+      allow read: if editor();
+      allow create: if editor() && request.resource.data.email == email();
+      allow update: if editor() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['undone', 'undoneBy', 'undoneAt']);
+    }
     // written only by the Nedarim sync on the server
     match /sync/{id} {
       allow read: if reader();
